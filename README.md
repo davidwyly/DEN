@@ -25,7 +25,6 @@ Facilitates trading of ERC20 tokens on EVM-compatible blockchains, with the foll
 - Only supports ERC20 tokens
 - Only supports EVM-compatible blockchains
 - Only supports Uniswap v2/v3 and some Uniswap v2 and v3 forks
-- Must have an awareness of the liquidity pool address for a given token pair
 
 ## Credit
 

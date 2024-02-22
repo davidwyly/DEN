@@ -24,38 +24,7 @@ Facilitates Uniswap v2/v3 token swaps for our partner:
         All For One, available for iOS and Android
         A product of Decentra, Inc.
         https://allforone.app
-        https://decentrasoftware.com
-
-                                 _.,,,===---                                
-                          _,,;bSC:"'                                        
-                      _,dMARk"'                                             
-                   _zAO8P"'                                                 
-                ,sRZ88"'                                                    
-              ,dKEUP"                                                       
-            ,d8NMB"                                                         
-           rA8OO"                                                           
-         .aE8TO                                                             
-        .t2BSB                                                              
-       .mAPEP                                                               
-      .dALAL"                                         _.                    
-      ,RNDCY                                      _,:"                      
-      hEUES;                                  _adC'                         
-      AEENN:                              _,5x""                            
-      RDLLI:                          _,gM;"'                               
-      RORIC;                      _,dAO;"'                                  
-      YNUVHb |                _,oNE;"'                                      
-      "ESEOR.|            _,uSE;"'                                         .
-      '7K4LOb|        _,smED;"                                            / 
-       'IOAO|||   _,rIMa;"'                                              d' 
-        "RS// \\eiNNa;'                                                ,p'  
-  ------=<<     >>=------                                            _p;'   
-        _,d\\ //DAo,                                               ,a8"'    
-     _;P""  ||`hCTIM;,                                           ,eTH"      
-  ,a"        | `KGNIDAEr,                                    _,cARc"        
-'            |   `'tFYLLEJ;,_                            _,oNETAP"          
-             |      `'"$USELESsa,,__              _,,,;lYNXb;"'             
-                         `'"aNIREVESMATHIasmmORFSGNITEERG;"'                
-                               ``"":;_ECLIPSE_DAO_;:"''                     
+        https://decentrasoftware.com                   
 */
 contract DecentralizedExchangeNetwork is 
     DexCallbackHandler,

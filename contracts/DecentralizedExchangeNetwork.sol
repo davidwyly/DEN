@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.19;
+pragma solidity 0.8.28;
 
 import "./DexCallbackHandler.sol";
+import "./FullMath.sol";
+import "hardhat/console.sol";
 
 /**
 @title  Decentralized Exchange Network (DEN)
@@ -28,7 +30,7 @@ Facilitates Uniswap v2/v3 token swaps for our partner:
 */
 contract DecentralizedExchangeNetwork is 
     DexCallbackHandler,
-    Ownable, 
+    Ownable,
     ReentrancyGuard
 {
     using SafeERC20 for IERC20;
@@ -44,15 +46,15 @@ contract DecentralizedExchangeNetwork is
     mapping ( address => uint256 ) partnerFeesCollected;
 
     // variables
-    uint8 public partnerFeeNumerator = 50; // Numerator for the partner fee percentage, default 0.5%
     address public partner; // Address of the partner who can set partner fees, preferably a multi-sig
     address public systemFeeReceiver; // Address to receive system fees, preferably a multi-sig
     address public partnerFeeReceiver; // Address to receive partner fees, preferably a multi-sig
+    uint8 public partnerFeeNumerator = 50; // Numerator for the partner fee percentage, default 0.5%
 
     // constants
-    uint8 constant SYSTEM_FEE_NUMERATOR = 15; // Numerator for the system fee percentage, 0.15%
-    uint8 constant MAX_PARTNER_FEE_NUMERATOR = 235; // Maximum partner fee percentage numerator, 2.35%
-    uint16 constant FEE_DENOMINATOR = 10000; // Fee denominator for percentage calculation
+    uint8 public constant SYSTEM_FEE_NUMERATOR = 15; // Numerator for the system fee percentage, 0.15%
+    uint8 public constant MAX_PARTNER_FEE_NUMERATOR = 235; // Maximum partner fee percentage numerator, 2.35%
+    uint16 public constant FEE_DENOMINATOR = 10000; // Fee denominator for percentage calculation
     
     // structs
     Statistics public statistics;
@@ -94,13 +96,63 @@ contract DecentralizedExchangeNetwork is
         address token,
         uint256 amount
     );
+    event SystemFeesCollectedOverflow(
+        address indexed token
+    );
+    event PartnerFeesCollectedOverflow(
+        address indexed token
+    );
+
+    error OnlyPartnerAllowed();
+    error ZeroAddress();
+    error SameAddress();
+    error NoChange();
+    error SameAsPartnerFeeReceiver();
+    error SameAsThisContract();
+    error ZeroValueForAmountOutMin();
+    error ZeroValueForMsgValue();
+    error CannotHaveWETHAsTokenOut();
+    error FeeTooHigh();
+    error ZeroValue();
+    error SameAsSystemFeeReceiver();
+    error CannotHaveWETHAsTokenIn();
+    error PartnerFeeTooHigh();
+    error AnotherSwapInProgress();
+    error ZeroValueForAmountIn();
+    error TokensCannotBeEqual();
+    error PoolCannotBeAToken();
+    error AddressCannotBeMsgSender();
+    error AddressCannotBeThisContract();
+    error InsufficientTokenBalance();
+    error InsufficientTokenAllowance();
+    error InvalidTokensForV2Pair();
+    error ZeroAddressForRouter();
+    error ZeroAddressForToken0();
+    error ZeroAddressForToken1();
+    error SameToken();
+    error ContractsMayNotCallThisFunction();
+    error ZeroAddressForPool();
+    error ZeroAddressForTokenIn();
+    error ZeroAddressForTokenOut();
+    error TokenCannotBeAPool();
+    error PoolCannotBeSender();
+    error TokenInCannotBeSender();
+    error TokenOutCannotBeSender();
+    error InvalidTokensForV3Pool();
+    error DivideByZero();
+    error InsufficientInputAmount();
+    error InsufficientLiquidity();
+    error InsufficientETHBalance();
+    error SendETHToRecipientFailed();
+    error IdenticalTokenAddresses();
+    error NoETHToWithdraw();
+    error NoTokensToWithdraw();
 
     // modifiers
     modifier onlyPartner() {
-        require(
-            msg.sender == partner,
-            "Only partner can call this function"
-        );
+        if (_msgSender() != partner) {
+            revert OnlyPartnerAllowed();
+        }
         _;
     }
 
@@ -111,34 +163,38 @@ contract DecentralizedExchangeNetwork is
     /**
     * @dev Constructor for the contract
     *
-    * @param WETH_ Address of the WETH contract
-    * @param partner_ Address of the partner, for more granular access
-    * @param systemFeeReceiver_ Address of the system fee receiver
-    * @param partnerFeeReceiver_ Address of the partner fee receiver
+    * @param _WETH Address of the WETH contract
+    * @param _partner Address of the partner, for more granular access
+    * @param _systemFeeReceiver Address of the system fee receiver
+    * @param _partnerFeeReceiver Address of the partner fee receiver
+    * @param _partnerFeeNumerator Numerator for the partner fee percentage
     */
     constructor(
-        address WETH_,
-        address partner_,
-        address systemFeeReceiver_,
-        address partnerFeeReceiver_
-    ) {
-        require(
-            WETH_ != address(0)
-            && partner_ != address(0)
-            && systemFeeReceiver_ != address(0)
-            && partnerFeeReceiver_ != address(0),
-            "Zero Address"
-        );
-        require(
-            partnerFeeReceiver != systemFeeReceiver_,
-            "Same Address for systemFeeReceiver and partnerFeeReceiver"
-        );
+        address _WETH,
+        address _partner,
+        address _systemFeeReceiver,
+        address _partnerFeeReceiver,
+        uint8 _partnerFeeNumerator
+    ) Ownable(_msgSender()) {
+        if (
+            _WETH == address(0) ||
+            _partner == address(0) ||
+            _systemFeeReceiver == address(0) ||
+            _partnerFeeReceiver == address(0)
+        ) {
+            revert ZeroAddress();
+        }
+
+        if (_partnerFeeReceiver == _systemFeeReceiver) {
+            revert SameAddress();
+        }
 
         // Set the values
-        WETH = WETH_; // immutable assignment of wrapped native coin for deployed network
-        partner = partner_; // partner can change with transferPartnership
-        systemFeeReceiver = systemFeeReceiver_; // owner can change with setSystemFeeReceiver
-        partnerFeeReceiver = partnerFeeReceiver_; // partner can change with setPartnerFeeReceiver
+        WETH = _WETH; // immutable assignment of wrapped native coin for deployed network
+        partner = _partner; // partner can change with transferPartnership
+        systemFeeReceiver = _systemFeeReceiver; // owner can change with setSystemFeeReceiver
+        partnerFeeReceiver = _partnerFeeReceiver; // partner can change with setPartnerFeeReceiver
+        partnerFeeNumerator = _partnerFeeNumerator; // partner can change with setPartnerFeeNumerator
     }
 
     ///////////////
@@ -153,26 +209,23 @@ contract DecentralizedExchangeNetwork is
     function setSystemFeeReceiver(
         address _newSystemFeeReceiver
     ) external onlyOwner {
-        require(
-            _newSystemFeeReceiver != address(0),
-            "Zero Address"
-        );
-        require(
-            _newSystemFeeReceiver != systemFeeReceiver,
-            "No Change"
-        );
-        require(
-            _newSystemFeeReceiver != partnerFeeReceiver,
-            "Same as partner fee receiver"
-        );
-        require(
-            _newSystemFeeReceiver != address(this),
-            "Same as this contract"
-        );
+
+        if (_newSystemFeeReceiver == address(0)) {
+            revert ZeroAddress();
+        }
+        if (_newSystemFeeReceiver == systemFeeReceiver) {
+            revert NoChange();
+        }
+        if (_newSystemFeeReceiver == partnerFeeReceiver) {
+            revert SameAsPartnerFeeReceiver();
+        }
+        if (_newSystemFeeReceiver == address(this)) {
+            revert SameAsThisContract();
+        }
 
         // Emit an event to notify of the change
         emit SystemFeeReceiverChanged(
-            msg.sender,
+            _msgSender(),
             systemFeeReceiver,
             _newSystemFeeReceiver
         );
@@ -189,22 +242,20 @@ contract DecentralizedExchangeNetwork is
     function setPartnerFeeNumerator(
         uint8 _newPartnerFeeNumerator
     ) external onlyPartner {
-        require(
-            _newPartnerFeeNumerator <= MAX_PARTNER_FEE_NUMERATOR,
-            "Fee Too High"
-        );
-        require(
-            _newPartnerFeeNumerator != partnerFeeNumerator,
-            "No Change"
-        );
-        require(
-            _newPartnerFeeNumerator != 0,
-            "Zero Value"
-        );
+
+        if (_newPartnerFeeNumerator > MAX_PARTNER_FEE_NUMERATOR) {
+            revert FeeTooHigh();
+        }
+        if (_newPartnerFeeNumerator == partnerFeeNumerator) {
+            revert NoChange();
+        }
+        if (_newPartnerFeeNumerator == 0) {
+            revert ZeroValue();
+        }
 
         // Emit an event to notify of the change
         emit PartnerFeeNumeratorChanged(
-            msg.sender, 
+            _msgSender(), 
             partnerFeeNumerator,
             _newPartnerFeeNumerator
         );
@@ -221,26 +272,23 @@ contract DecentralizedExchangeNetwork is
     function setPartnerFeeReceiver(
         address _newPartnerFeeReceiver
     ) external onlyPartner {
-        require(
-            _newPartnerFeeReceiver != address(0),
-            "Zero Address"
-        );
-        require(
-            _newPartnerFeeReceiver != partnerFeeReceiver,
-            "No Change"
-        );
-        require(
-            _newPartnerFeeReceiver != systemFeeReceiver,
-            "Same as system fee receiver"
-        );
-        require(
-            _newPartnerFeeReceiver != address(this),
-            "Same as this contract"
-        );
+
+        if (_newPartnerFeeReceiver == address(0)) {
+            revert ZeroAddress();
+        }
+        if (_newPartnerFeeReceiver == partnerFeeReceiver) {
+            revert NoChange();
+        }
+        if (_newPartnerFeeReceiver == systemFeeReceiver) {
+            revert SameAsSystemFeeReceiver();
+        }
+        if (_newPartnerFeeReceiver == address(this)) {
+            revert SameAsThisContract();
+        }
 
         // Emit an event to notify of the change
         emit PartnerFeeReceiverChanged(
-            msg.sender,
+            _msgSender(),
             partnerFeeReceiver,
             _newPartnerFeeReceiver
         );
@@ -257,17 +305,15 @@ contract DecentralizedExchangeNetwork is
     function transferPartnership(
         address _newPartner
     ) external onlyPartner {
-        require(
-            _newPartner != address(0),
-            "Zero Address"
-        );
-        require(
-            _newPartner != partner,
-            "No Change"
-        );
+        if (_newPartner == address(0)) {
+            revert ZeroAddress();
+        }
+        if (_newPartner == partner) {
+            revert NoChange();
+        }
 
         emit PartnershipTransferred(
-            msg.sender,
+            _msgSender(),
             partner,
             _newPartner
         );
@@ -474,18 +520,15 @@ contract DecentralizedExchangeNetwork is
         * note: External parameter checks are performed downstream
         */
 
-        require(
-            _amountOutMin > 0,
-            "Zero Value for amountOutMin"
-        );
-        require(
-            msg.value > 0,
-            "Zero Value for msg.value"
-        );
-        require(
-            _tokenOut != WETH,
-            "Cannot have WETH as tokenOut, use swapTokenForETH instead"
-        );
+        if (_amountOutMin == 0) {
+            revert ZeroValueForAmountOutMin();
+        }
+        if (msg.value == 0) {
+            revert ZeroValueForMsgValue();
+        }
+        if (_tokenOut == WETH) {
+            revert CannotHaveWETHAsTokenOut();
+        }
 
         // Handle the fees on the payed amount
         (   uint256 _systemFee,
@@ -518,7 +561,7 @@ contract DecentralizedExchangeNetwork is
             _tokenOut,          
             _amountInLessFees,  // msg.value less fees
             address(this),      // payer is this contract which is paying with WETH
-            msg.sender          // recipient is the sender who will receive the tokens
+            _msgSender()        // recipient is the sender who will receive the tokens
         );
 
         // Verify the amount of output tokens received from the swap
@@ -557,14 +600,12 @@ contract DecentralizedExchangeNetwork is
         * note: External parameter checks are performed downstream
         */
 
-        require(
-            _tokenIn != WETH,
-            "Cannot have WETH as tokenIn, use swapETHForToken instead"
-        );
-        require(
-            _amountOutMin > 0,
-            "Zero Value for amountOutMin"
-        );
+        if (_tokenIn == WETH) {
+            revert CannotHaveWETHAsTokenIn();
+        }
+        if (_amountOutMin == 0) {
+            revert ZeroValueForAmountOutMin();
+        }
 
         // Set WETH into memory to avoid repeated SLOADs
         address _WETH = WETH;
@@ -574,9 +615,9 @@ contract DecentralizedExchangeNetwork is
         uint256 _amountOut = _executeSwap(
             _pool,
             _tokenIn,
-            _WETH,           // tokenOut is WETH
+            _WETH,          // tokenOut is WETH
             _amountIn,
-            msg.sender,     // payer is the sender who is paying with tokens
+            _msgSender(),   // payer is the sender who is paying with tokens
             address(this)   // recipient is this contract which will receive the WETH
         ); 
 
@@ -607,7 +648,7 @@ contract DecentralizedExchangeNetwork is
         _sendETH(partnerFeeReceiver, _partnerFee);
 
         // Send the rest to the sender
-        _sendETH(msg.sender, _amountOutAfterTax);
+        _sendETH(_msgSender(), _amountOutAfterTax);
     }
 
     /**
@@ -643,19 +684,17 @@ contract DecentralizedExchangeNetwork is
 
         // Set WETH into memory to avoid repeated SLOADs
         address _WETH = WETH;
+        address _msgSender = _msgSender();
 
-        require(
-            _amountOutMin > 0,
-            "Zero Value for amountOutMin"
-        );
-        require(
-            _tokenIn != _WETH,
-            "Cannot have WETH as tokenIn, use swapETHForToken instead"
-        );
-        require(
-            _tokenOut != _WETH,
-            "Cannot have WETH as tokenOut, use swapTokenForETH instead"
-        );
+        if (_amountOutMin == 0) {
+            revert ZeroValueForAmountOutMin();
+        }
+        if (_tokenIn == _WETH) {
+            revert CannotHaveWETHAsTokenIn();
+        }
+        if (_tokenOut == _WETH) {
+            revert CannotHaveWETHAsTokenOut();
+        }
 
         // Execute the swap
         // amountOut is the amount of tokens received by this contract
@@ -664,7 +703,7 @@ contract DecentralizedExchangeNetwork is
             _tokenIn,
             _tokenOut,
             _amountIn,
-            msg.sender,     // payer is the sender who is paying with tokens
+            _msgSender,     // payer is the sender who is paying with tokens
             address(this)   // recipient is this contract which will receive the tokens
         ); 
 
@@ -675,8 +714,25 @@ contract DecentralizedExchangeNetwork is
         // Update statistics
         unchecked {
             statistics.swapTokenForTokenCount++;
-            systemFeesCollected[_tokenOut] += _systemFee;
-            partnerFeesCollected[_tokenOut] += _partnerFee;
+                // Add system fees only if it won't overflow
+            uint256 currentSystemFee = systemFeesCollected[_tokenOut];
+            if (currentSystemFee <= type(uint256).max - _systemFee) {
+                systemFeesCollected[_tokenOut] += _systemFee;
+            } else {
+                // Emit an event to notify of the overflow, statistics will be inaccurate
+                // but we don't want to brick the contract
+                emit SystemFeesCollectedOverflow(_tokenOut);
+            }
+
+            // Add partner fees only if it won't overflow
+            uint256 currentPartnerFee = partnerFeesCollected[_tokenOut];
+            if (currentPartnerFee <= type(uint256).max - _partnerFee) {
+                partnerFeesCollected[_tokenOut] += _partnerFee;
+            } else {
+                // Emit an event to notify of the overflow, statistics will be inaccurate
+                // but we don't want to brick the contract
+                emit PartnerFeesCollectedOverflow(_tokenOut);
+            }
         }
 
         // Verify the amount of output tokens received from the swap
@@ -692,7 +748,7 @@ contract DecentralizedExchangeNetwork is
         IERC20(_tokenOut).safeTransfer(partnerFeeReceiver, _partnerFee);
 
         // Transfer the rest to the sender
-        IERC20(_tokenOut).safeTransfer(msg.sender, _amountOutAfterTax);
+        IERC20(_tokenOut).safeTransfer(_msgSender, _amountOutAfterTax);
     }
 
     /**
@@ -702,10 +758,9 @@ contract DecentralizedExchangeNetwork is
     * @return _uniswapVersion The Uniswap version of the pool (2, 3) or 0 if it's not a Uniswap pool
     */
     function getUniswapVersion(address _pool) public view returns (uint8 _uniswapVersion) {
-        require(
-            _pool != address(0),
-            "Zero Address"
-        );
+        if (_pool == address(0)) {
+            revert ZeroAddress();
+        }
 
         // Check for Uniswap V2 function
         try IUniswapV2Pair(_pool).getReserves() {
@@ -744,10 +799,10 @@ contract DecentralizedExchangeNetwork is
         uint256 _systemFee,
         uint256 _partnerFee
     ) {
-        require (
-            _partnerFeeNumerator <= MAX_PARTNER_FEE_NUMERATOR,
-            "Partner fee too high"
-        );
+
+        if (_partnerFeeNumerator > MAX_PARTNER_FEE_NUMERATOR) {
+            revert PartnerFeeTooHigh();
+        }
 
         // Calculate the system fee as a fraction of the amount, based on the systemFeeNumerator and FEE_DENOMINATOR
         _systemFee = (_amount * SYSTEM_FEE_NUMERATOR) / FEE_DENOMINATOR;
@@ -782,55 +837,49 @@ contract DecentralizedExchangeNetwork is
         address _payer,
         address _recipient
     ) internal returns (uint256 _amountOut) {
-        require(
-            currentSwapPool == address(0),
-            "Another swap is in progress"
-        );
-        require(
-            _pool != address(0)
-            && _tokenIn != address(0)
-            && _tokenOut != address(0),
-            // _payer and _recipient are not checked because they set upstream
-            "Zero Address"
-        );
-        require(
-            _amountIn > 0,
-            "Zero Value for amountIn"
-        );
-        require(
-            _tokenIn != _tokenOut,
-            "Tokens cannot be equal"
-        );
-        require(
-            _pool != _tokenIn 
-            && _pool != _tokenOut,
-            "Pool cannot be a token"
-        );
-        require(
-            _pool != msg.sender
-            && _tokenIn != msg.sender
-            && _tokenOut != msg.sender,
-            // there is no foreseeable case where these addresses should ever be msg.sender
-            // this is a sanity check to gate off unexpected behavior
-            "Address cannot be msg.sender"
-        );
-        require(
-            _pool != address(this)
-            && _tokenIn != address(this)
-            && _tokenOut != address(this),
-            // there is no foreseeable case where these addresses should ever be this contract
-            // this is a sanity check to gate off unexpected behavior
-            "Address cannot be this contract"
-        );
-        require(
-            IERC20(_tokenIn).balanceOf(_payer) >= _amountIn,
-            "Insufficient token balance"
-        );
+
+        address _msgSender = _msgSender();
+
+        if (currentSwapPool != address(0)) {
+            revert AnotherSwapInProgress();
+        }
+        if (
+            _pool == address(0) ||
+            _tokenIn == address(0) ||
+            _tokenOut == address(0)
+        ) {
+            revert ZeroAddress();
+        }
+        if (_amountIn == 0) {
+            revert ZeroValueForAmountIn();
+        }
+        if (_tokenIn == _tokenOut) {
+            revert TokensCannotBeEqual();
+        }
+        if (_pool == _tokenIn || _pool == _tokenOut) {
+            revert PoolCannotBeAToken();
+        }
+        if (
+            _pool == _msgSender ||
+            _tokenIn == _msgSender ||
+            _tokenOut == _msgSender
+        ) {
+            revert AddressCannotBeMsgSender();
+        }
+        if (
+            _pool == address(this) ||
+            _tokenIn == address(this) ||
+            _tokenOut == address(this)
+        ) {
+            revert AddressCannotBeThisContract();
+        }
+        if (IERC20(_tokenIn).balanceOf(_payer) < _amountIn) {
+            revert InsufficientTokenBalance();
+        }
         if (_payer != address(this)) {
-            require(
-                IERC20(_tokenIn).allowance(_payer, address(this)) >= _amountIn,
-                "Insufficient token allowance"
-            );
+            if (IERC20(_tokenIn).allowance(_payer, address(this)) < _amountIn) {
+                revert InsufficientTokenAllowance();
+            }
         }
 
         // Determine the Uniswap version
@@ -838,7 +887,7 @@ contract DecentralizedExchangeNetwork is
 
         // Emit an event to notify of the swap
         emit Swap(
-            msg.sender,
+            _msgSender,
             _pool,
             _uniswapVersion,
             _tokenIn,
@@ -880,10 +929,10 @@ contract DecentralizedExchangeNetwork is
         address _recipient
     ) internal {
         IUniswapV2Pair _v2Pool = IUniswapV2Pair(_pool);
-        require(
-            _isValidV2TokenPool(_v2Pool, _tokenIn, _tokenOut),
-            "Invalid tokens for V2 pair"
-        );
+
+        if (!_isValidV2TokenPool(_v2Pool, _tokenIn, _tokenOut)) {
+            revert InvalidTokensForV2Pair();
+        }
 
         // When the payer is not this contract, pull tokens from the payer to the pool
         if (_payer != address(this)) {
@@ -965,8 +1014,8 @@ contract DecentralizedExchangeNetwork is
 
         uint160 _sqrtPriceLimitX96 =
             (_zeroForOne) 
-                ? TickMath.MIN_SQRT_RATIO + 1
-                : TickMath.MAX_SQRT_RATIO - 1;
+                ? 4295128739 + 1                                         // min 
+                : 1461446703485210103287273052203988822378723970342 - 1; // max
 
         int256 _amountSpecified =
             (_zeroForOne) 
@@ -1030,24 +1079,54 @@ contract DecentralizedExchangeNetwork is
         address _token0,
         address _token1
     ) external view returns (address _pool) {
-        require(
-            _router != address(0),
-            "Zero Address for router"
-        );
-        require(
-            _token0 != address(0),
-            "Zero Address for token"
-        );
-        require(
-            _token1 != address(0),
-            "Zero Address for token"
-        );
-        require(
-            _token0 != _token1,
-            "Same token"
-        );
+
+        if (_router == address(0)) {
+            revert ZeroAddressForRouter();
+        }
+        if (_token0 == address(0)) {
+            revert ZeroAddressForToken0();
+        }
+        if (_token1 == address(0)) {
+            revert ZeroAddressForToken1();
+        }
+        if (_token0 == _token1) {
+            revert SameToken();
+        }
+
         address _factory = IUniswapV2Router02(_router).factory();
         return IUniswapV2Factory(_factory).getPair(_token0, _token1);
+    }
+
+    /**
+    * @dev For a Uniswapv3 factory and a pair of tokens, returns the address of the pool
+    *
+    * @param _factory The address of the Uniswap v3 factory
+    * @param _token0 The address of the first token
+    * @param _token1 The address of the second token
+    * @param _fee The fee tier of the pool
+    * @return _pool The address of the pool
+    */
+    function getV3PoolFromFactory(
+        address _factory,
+        address _token0,
+        address _token1,
+        uint24 _fee
+    ) external view returns (address _pool) {
+        
+        if (_factory == address(0)) {
+            revert ZeroAddressForRouter();
+        }
+        if (_token0 == address(0)) {
+            revert ZeroAddressForToken0();
+        }
+        if (_token1 == address(0)) {
+            revert ZeroAddressForToken1();
+        }
+        if (_token0 == _token1) {
+            revert SameToken();
+        }
+
+        return IUniswapV3Factory(_factory).getPool(_token0, _token1, _fee);
     }
 
     /**
@@ -1060,63 +1139,43 @@ contract DecentralizedExchangeNetwork is
     *
     * @param _pool The address of the Uniswap pool
     * @param _tokenIn The address of the input token
-    * @param _tokenOut The address of the output token
     * @param _amountIn The amount of input tokens to swap
     * @return _amountOut The estimated amount of output tokens to receive
     */
     function estimateAmountOut(
         address _pool,
         address _tokenIn,
-        address _tokenOut,
         uint256 _amountIn
     ) external view returns (uint256 _amountOut) {
-        require(
-            !_isContract(msg.sender),
-            "Contracts may not call this function"
-        );
-        require(
-            _pool != address(0),
-            "Zero Address for pool"
-        );
-        require(
-            _tokenIn != address(0),
-            "Zero Address for tokenIn"
-        );
-        require(
-            _tokenOut != address(0),
-            "Zero Address for tokenOut"
-        );
-        require(
-            _tokenIn != _tokenOut,
-            "Tokens cannot be equal"
-        );
-        require(
-            _amountIn > 0,
-            "Zero Value for amountIn"
-        );
-        require(
-            _pool != _tokenIn 
-            && _pool != _tokenOut,
-            "Token cannot be pool"
-        );
-        require(
-            _pool != msg.sender,
-            "Pool cannot be sender"
-        );
-        require(
-            _tokenIn != msg.sender,
-            "TokenIn cannot be sender"
-        );
-        require(
-            _tokenOut != msg.sender,
-            "TokenOut cannot be sender"
-        );
+        address _msgSender = _msgSender();
+
+        if (_isContract(_msgSender)) {
+            revert ContractsMayNotCallThisFunction();
+        }
+        if (_pool == address(0)) {
+            revert ZeroAddressForPool();
+        }
+        if (_tokenIn == address(0)) {
+            revert ZeroAddressForTokenIn();
+        }
+        if (_amountIn == 0) {
+            revert ZeroValueForAmountIn();
+        }
+        if (_pool == _tokenIn) {
+            revert TokenCannotBeAPool();
+        }
+        if (_pool == _msgSender) {
+            revert PoolCannotBeSender();
+        }
+        if (_tokenIn == _msgSender) {
+            revert TokenInCannotBeSender();
+        }
 
         uint8 _uniswapVersion = getUniswapVersion(_pool);
         if (_uniswapVersion == 2) {
-            return _estimateAmountOutV2(_pool, _tokenIn, _tokenOut, _amountIn);
+            return _estimateAmountOutV2(_pool, _tokenIn, _amountIn);
         } else if (_uniswapVersion == 3) {
-            return _estimateAmountOutV3(_pool, _tokenIn, _tokenOut, _amountIn);
+            return _estimateAmountOutV3(_pool, _tokenIn, _amountIn);
         } else {
             revert("Unsupported DEX");
         }
@@ -1126,7 +1185,7 @@ contract DecentralizedExchangeNetwork is
     /// INTERNAL HELPER FUNCTIONS ///
     /////////////////////////////////
 
-        /**
+    /**
     * @dev Determines if the given address is a contract.
     * 
     * note: Caveats:
@@ -1150,21 +1209,15 @@ contract DecentralizedExchangeNetwork is
     *
     * @param _pool The address of the Uniswap V2 pool
     * @param _tokenIn The address of the input token
-    * @param _tokenOut The address of the output token
     * @param _amountIn The amount of input tokens to swap
     * @return _amountOut The estimated amount of output tokens to receive
     */
     function _estimateAmountOutV2(
         address _pool,
         address _tokenIn,
-        address _tokenOut,
         uint256 _amountIn
     ) internal view returns (uint256 _amountOut) {
         IUniswapV2Pair _v2Pool = IUniswapV2Pair(_pool);
-        require(
-            _isValidV2TokenPool(_v2Pool, _tokenIn, _tokenOut),
-            "Invalid tokens for V2 pair"
-        );
 
         (   uint256 _reserve0,
             uint256 _reserve1,) = _v2Pool.getReserves();
@@ -1186,42 +1239,40 @@ contract DecentralizedExchangeNetwork is
     *
     * @param _pool The address of the Uniswap V3 pool
     * @param _tokenIn The address of the input token
-    * @param _tokenOut The address of the output token
     * @param _amountIn The amount of input tokens to swap
     * @return _amountOut The estimated amount of output tokens to receive
     */
     function _estimateAmountOutV3(
         address _pool,
         address _tokenIn,
-        address _tokenOut,
         uint256 _amountIn
     ) internal view returns (uint256 _amountOut) {
         IUniswapV3Pool _v3Pool = IUniswapV3Pool(_pool);
-        require(
-            _isValidV3TokenPool(_v3Pool, _tokenIn, _tokenOut),
-            "Invalid tokens for V3 pool"
+        (uint160 sqrtPriceX96, , , , , , ) = _v3Pool.slot0();
+        uint256 squaredPriceX96 = uint256(sqrtPriceX96) * uint256(sqrtPriceX96);
+        uint256 price0to1_1e18 = FullMath.mulDiv(
+            squaredPriceX96,
+            1e18,
+            1 << 192
         );
-
-        // Get the current price of the pool
-        (uint160 _sqrtPriceX96,,,,,,) = _v3Pool.slot0();
-
-        uint8 _decimalsTokenIn = IERC20Decimals(_tokenIn).decimals();
-        uint8 _decimalsTokenOut = IERC20Decimals(_tokenOut).decimals();
-
-        // Calculate squared price keeping as much precision as possible
-        uint256 _squaredPriceX96 = _sqrtPriceX96 * _sqrtPriceX96;
-
-        // Order of operations matters here to avoid overflow
-        uint256 _tmpPrice = (_squaredPriceX96 / (2**96)) * (10**_decimalsTokenIn) / (10**_decimalsTokenOut);
-
-        // If _tokenIn isn't pool.token0(), we need the inverse of the price
-        if (_tokenIn != _v3Pool.token0()) {
-            require(_tmpPrice > 0, "Divide by Zero");
-            // Inverse the price and adjust for potential 1e36 multiplication
-            _tmpPrice = (1e36 / _tmpPrice) / (10**(_decimalsTokenIn + _decimalsTokenOut)); 
+        
+        uint256 rawPrice_1e18;
+        if (_tokenIn == _v3Pool.token0()) {
+            rawPrice_1e18 = price0to1_1e18;
+        } else {
+            if (price0to1_1e18 == 0) {
+                revert("DivideByZero");
+            }
+            rawPrice_1e18 = FullMath.mulDiv(1e18, 1e18, price0to1_1e18);
         }
 
-        return _amountIn * _tmpPrice;
+        _amountOut = FullMath.mulDiv(
+            _amountIn,
+            rawPrice_1e18,
+            1e18
+        );
+    
+        return _amountOut;
     }
 
     /**
@@ -1238,17 +1289,14 @@ contract DecentralizedExchangeNetwork is
         uint256 _reserveOut
     ) internal view returns (uint256 _amountOut) {
         // Ensure that the input amount is greater than zero
-        require(
-            _amountIn > 0,
-            'Insufficient input amount'
-        );
+        if (_amountIn == 0) {
+            revert InsufficientInputAmount();
+        }
         
         // Ensure that both reserves are greater than zero
-        require(
-            _reserveIn > 0 
-            && _reserveOut > 0,
-            'Insufficient liquidity'
-        );
+        if (_reserveIn == 0 || _reserveOut == 0) {
+            revert InsufficientLiquidity();
+        }
         
         // Calculate the input amount with the fee deducted
         uint256 _amountInWithFee = _amountIn * (FEE_DENOMINATOR - (partnerFeeNumerator + SYSTEM_FEE_NUMERATOR));
@@ -1258,11 +1306,10 @@ contract DecentralizedExchangeNetwork is
         
         // Calculate the denominator of the output amount equation
         uint256 _denominator = (_reserveIn * FEE_DENOMINATOR) - _amountInWithFee;
-        require(
-            _denominator > 0,
-            'Divide by zero'
-        );
-        
+        if (_denominator == 0) {
+            revert DivideByZero();
+        }
+
         // Calculate the output amount based on the input amount and the reserve amounts of the tokens
         return _numerator / _denominator;
     }
@@ -1275,16 +1322,15 @@ contract DecentralizedExchangeNetwork is
     */
     function _sendETH(address _receiver, uint256 _amount) internal {
         // Check that the contract has enough ETH balance to send
-        require(
-            address(this).balance >= _amount,
-            'Insufficient ETH balance'
-        );
+        if (address(this).balance < _amount) {
+            revert InsufficientETHBalance();
+        }
         
         // Transfer the specified amount of ETH to the receiver's address
         (bool success,) = payable(_receiver).call{value: _amount}("");
-        require(
-            success, 'Send ETH To Recipient Failed'
-        );
+        if (!success) {
+            revert SendETHToRecipientFailed();
+        }
     }
 
     /**
@@ -1303,10 +1349,9 @@ contract DecentralizedExchangeNetwork is
         address _token1
     ) {
         // Ensure that the two token addresses are not identical
-        require(
-            _tokenA != _tokenB,
-            'Identical token addresses'
-        );
+        if (_tokenA == _tokenB) {
+            revert IdenticalTokenAddresses();
+        }
         
         // Sort the two token addresses alphabetically and return them
         (_token0, _token1) = 
@@ -1315,10 +1360,9 @@ contract DecentralizedExchangeNetwork is
                 : (_tokenB, _tokenA);
         
         // Ensure that the first token address is not the zero address
-        require(
-            _token0 != address(0),
-            'Zero addres'
-        );
+        if (_token0 == address(0)) {
+            revert ZeroAddress();
+        }
     }
 
     /**
@@ -1375,14 +1419,16 @@ contract DecentralizedExchangeNetwork is
     * @dev Emergency function to withdraw ETH accidentally stuck in the contract
     */
     function emergencyWithdrawETH() external nonReentrant onlyOwner {
+        address _msgSender = _msgSender();
+
         uint256 _balance = address(this).balance;
-        require(
-            _balance > 0,
-            "No ETH to withdraw"
-        );
-        _sendETH(msg.sender, _balance);
+        if (_balance == 0) {
+            revert NoETHToWithdraw();
+        }
+
+        _sendETH(_msgSender, _balance);
         emit EmergencyWithdrawETH(
-            msg.sender,
+            _msgSender,
             _balance
         );
     }
@@ -1393,14 +1439,16 @@ contract DecentralizedExchangeNetwork is
     * @param _token The address of the ERC20 token to withdraw
     */
     function emergencyWithdrawToken(address _token) external nonReentrant onlyOwner {
+        address _msgSender = _msgSender();
+
         uint256 _balance = IERC20(_token).balanceOf(address(this));
-        require(
-            _balance > 0,
-            "No tokens to withdraw"
-        );
-        IERC20(_token).safeTransfer(msg.sender, _balance);
+        if (_balance == 0) {
+            revert NoTokensToWithdraw();
+        }
+
+        IERC20(_token).safeTransfer(_msgSender, _balance);
         emit EmergencyWithdrawToken(
-            msg.sender,
+            _msgSender,
             _token,
             _balance
         );

@@ -1,0 +1,23 @@
+{
+    "name": "Decentralized Exchange Network",
+    "version": "2.0.0",
+    "scripts": {
+        "compile": "hardhat compile",
+        "test": "hardhat test"
+    },
+    "devDependencies": {
+        "@nomicfoundation/hardhat-chai-matchers": "^2.0.8",
+        "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+        "@nomicfoundation/hardhat-verify": "^2.0.12"
+  },
+    "dependencies": {
+        "@openzeppelin/contracts": "^5.2.0",
+        "@uniswap/v2-core": "^1.0.1",
+        "@uniswap/v2-periphery": "^1.1.0-beta.0",
+        "@uniswap/v3-core": "^1.0.1",
+        "@uniswap/v3-periphery": "^1.4.4",
+        "dotenv": "^16.4.7",
+        "ethers": "^6.13.4",
+        "hardhat": "^2.22.17"
+    }
+}

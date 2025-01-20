@@ -3,4 +3,5 @@ node_modules
 cache
 bin
 artifacts
-typechain-types
+/typechain
+/typechain-types

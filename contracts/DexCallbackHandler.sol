@@ -46,181 +46,96 @@ abstract contract DexCallbackHandler {
 
     address internal currentSwapPool; // Address of the pool currently mid-swap
 
-    /**
-    * @dev Callback for Uniswap V3 pool
-    *
-    * @param _amount0Delta The amount of token0 required to send to the pool
-    * @param _amount1Delta The amount of token1 required to send to the pool
-    */
-    function uniswapV3SwapCallback(
-        int256 _amount0Delta,
-        int256 _amount1Delta,
-        bytes calldata _data
-    ) public {
-        require(
-            msg.sender == currentSwapPool,
-            "Unauthorized callback"
-        );
-        require(
-            (_amount0Delta > 0 
-            || _amount1Delta > 0),
-            "No tokens received"
-        );
-        require(
-            _data.length > 0,
-            "No callback data"
-        );
-        
-        // Decode the callback data
-        (   address _tokenIn,
-            address _payer) = abi.decode(_data, (address, address));
+    fallback() external payable {
+        // If there is no data or not enough data, revert early.
+        // Each V3-like callback typically has >=68 bytes: 
+        // 4-byte selector + (int256 + int256 + bytes offset).
+        if (msg.data.length < 68) {
+            revert("Not enough data for a V3 callback");
+        }
 
-        require(
-            _tokenIn != address(0),
-            "Invalid token"
-        );
-        require(
-            _payer != address(0),
-            "Invalid payer"
+        // 1. Decode the arguments (skipping the first 4 bytes which is the function selector).
+        (int256 amount0Delta, int256 amount1Delta, bytes memory data) = abi.decode(
+            msg.data[4:], 
+            (int256, int256, bytes)
         );
 
-        // Get the token that was received
-        uint256 _amountToPay = 
-            (_amount0Delta > 0) 
-                ? uint256(_amount0Delta) 
-                : uint256(_amount1Delta);
+        // 2. Enforce your checks:
+        if (msg.sender != currentSwapPool) {
+            revert("Unauthorized callback");
+        }
+        if (amount0Delta <= 0 && amount1Delta <= 0) {
+            revert("No tokens received");
+        }
 
-        // Pay the pool
-        pay(_tokenIn, _payer, msg.sender, _amountToPay);
+        // 3. Decode your custom `_data` – typically `(tokenIn, payer)`.
+        if (data.length < 64) {
+            revert("Missing inner callback data");
+        }
+        (address tokenIn, address payer) = abi.decode(data, (address, address));
+        if (tokenIn == address(0)) {
+            revert("Invalid tokenIn");
+        }
+        if (payer == address(0)) {
+            revert("Invalid payer");
+        }
+
+        // 4. Figure out how many tokens we owe the pool:
+        uint256 amountToPay = amount0Delta > 0
+            ? uint256(amount0Delta)
+            : uint256(amount1Delta);
+
+        // 5. Pay the pool. (Calls the same `_pay` logic you already wrote.)
+        _pay(tokenIn, payer, msg.sender, amountToPay);
     }
 
-    /**
-    * @dev Pay a recipient
-    *
-    * @param _tokenIn The token to send
-    * @param _payer The address that is paying
-    * @param _recipient The address that is receiving
-    * @param _amountToPay The amount of tokens to pay
-    */
-    function pay(
+
+    function _pay(
         address _tokenIn,
         address _payer,
         address _recipient,
         uint256 _amountToPay
-    ) private {
+    ) internal {
         // If the payer is this contract, then we send the tokens to the pool from this contract
         if (_payer == address(this)) {
-
-            // Load WETH into memory to reduce SLOAD costs
-            address _WETH = WETH; 
+            // Load WETH into memory to reduce extra SLOAD
+            address _WETH = WETH;
             
-            // Special handling for WETH
-            if (_tokenIn == _WETH
-                && address(this).balance >= _amountToPay
-            ) {
-                // If we have enough ETH, convert the ETH into WETH
+            // Special handling for WETH: if we have enough raw ETH sitting in the contract,
+            // convert it to WETH before transferring
+            if (_tokenIn == _WETH && address(this).balance >= _amountToPay) {
+                // Deposit raw ETH into WETH
                 IWETH(_WETH).deposit{value: _amountToPay}();
             }
             
-            // Verify that this contract has enough tokens
-            // At this point, any ETH has been converted to WETH
-            if (IERC20(_tokenIn).balanceOf(address(this)) < _amountToPay) {
+            // Verify that this contract has enough of _tokenIn after potentially wrapping
+            uint256 balance = IERC20(_tokenIn).balanceOf(address(this));
+            if (balance < _amountToPay) {
                 revert("Contract has insufficient token balance");
             }
 
-            // Transfer the tokens to the pool
+            // Transfer the tokens from this contract to the recipient (the pool)
             IERC20(_tokenIn).safeTransfer(_recipient, _amountToPay);
 
-        // If the payer is not this contract, then we send the tokens to the pool from the payer
         } else {
+            // If the payer is not this contract, transfer from the payer's wallet
 
-            // Verify that the payer has enough tokens
-            if (IERC20(_tokenIn).balanceOf(_payer) < _amountToPay) {
+            // Check that the payer has enough tokens
+            uint256 payerBalance = IERC20(_tokenIn).balanceOf(_payer);
+            if (payerBalance < _amountToPay) {
                 revert("Payer has insufficient token balance");
             }
 
-            // Verify that the payer has approved this contract to spend their tokens
-            if (IERC20(_tokenIn).allowance(_payer, address(this)) < _amountToPay) {
+            // Check that the payer has approved this contract to spend the required amount
+            uint256 allowed = IERC20(_tokenIn).allowance(_payer, address(this));
+            if (allowed < _amountToPay) {
                 revert("Payer has insufficient token allowance");
             }
 
-            // Transfer the tokens to the pool
+            // Transfer the tokens from payer to the recipient (the pool)
             IERC20(_tokenIn).safeTransferFrom(_payer, _recipient, _amountToPay);
         }
     }
 
-    /**
-    * @dev Callback for Pancakeswap V3 pool
-    *
-    * @param _amount0Delta The amount of token0 required to send to the pool
-    * @param _amount1Delta The amount of token1 required to send to the pool
-    * @param _data The callback data
-    */
-    function pancakeV3SwapCallback(
-        int256 _amount0Delta,
-        int256 _amount1Delta,
-        bytes calldata _data
-    ) external {
-       uniswapV3SwapCallback(_amount0Delta, _amount1Delta, _data);
-    }
-
-    /**
-    * @dev Callback for Quickswap/Algebra V3 pool
-    *
-    * @param _amount0Delta The amount of token0 required to send to the pool
-    * @param _amount1Delta The amount of token1 required to send to the pool
-    * @param _data The callback data
-    */
-    function algebraSwapCallback(
-        int256 _amount0Delta,
-        int256 _amount1Delta,
-        bytes calldata _data
-    ) external {
-       uniswapV3SwapCallback(_amount0Delta, _amount1Delta, _data);
-    }
-
-    /**
-    * @dev Callback for FusionX V3 pool
-    *
-    * @param _amount0Delta The amount of token0 required to send to the pool
-    * @param _amount1Delta The amount of token1 required to send to the pool
-    * @param _data The callback data
-    */
-    function fusionXV3SwapCallback(
-        int256 _amount0Delta,
-        int256 _amount1Delta,
-        bytes calldata _data
-    ) external {
-       uniswapV3SwapCallback(_amount0Delta, _amount1Delta, _data);
-    }
-
-    /**
-    * @dev Callback for Beamswap V3 pool
-    *
-    * @param _amount0Delta The amount of token0 required to send to the pool
-    * @param _amount1Delta The amount of token1 required to send to the pool
-    * @param _data The callback data
-    */
-    function beamswapV3SwapCallback(
-        int256 _amount0Delta,
-        int256 _amount1Delta,
-        bytes calldata _data
-    ) external {
-       uniswapV3SwapCallback(_amount0Delta, _amount1Delta, _data);
-    }
-
-    /**
-    * @dev Callback for Kyberswap V3 pool
-  *
-    * @param _amount0Delta The amount of token0 required to send to the pool
-    * @param _amount1Delta The amount of token1 required to send to the pool
-    * @param _data The callback data
-    */
-    function swapCallback(
-        int256 _amount0Delta,
-        int256 _amount1Delta,
-        bytes calldata _data
-    ) external {
-       uniswapV3SwapCallback(_amount0Delta, _amount1Delta, _data);
-    }
+    receive() external payable {}
 }

@@ -45,6 +45,9 @@ contract DecentralizedExchangeNetwork is
     mapping ( address => uint256 ) systemFeesCollected;
     mapping ( address => uint256 ) partnerFeesCollected;
 
+    address[] public supportedV2Routers;
+    address[] public supportedV3Routers;
+
     // variables
     address public partner; // Address of the partner who can set partner fees, preferably a multi-sig
     address public systemFeeReceiver; // Address to receive system fees, preferably a multi-sig
@@ -102,6 +105,18 @@ contract DecentralizedExchangeNetwork is
     event PartnerFeesCollectedOverflow(
         address indexed token
     );
+    event V2RouterAdded(
+        address indexed router
+    );
+    event V3RouterAdded(
+        address indexed router
+    );
+    event V2RouterRemoved(
+        address indexed router
+    );
+    event V3RouterRemoved(
+        address indexed router
+    );
 
     error OnlyPartnerAllowed();
     error ZeroAddress();
@@ -147,6 +162,7 @@ contract DecentralizedExchangeNetwork is
     error IdenticalTokenAddresses();
     error NoETHToWithdraw();
     error NoTokensToWithdraw();
+    error IndexOutOfRange();
 
     // modifiers
     modifier onlyPartner() {
@@ -195,6 +211,66 @@ contract DecentralizedExchangeNetwork is
         systemFeeReceiver = _systemFeeReceiver; // owner can change with setSystemFeeReceiver
         partnerFeeReceiver = _partnerFeeReceiver; // partner can change with setPartnerFeeReceiver
         partnerFeeNumerator = _partnerFeeNumerator; // partner can change with setPartnerFeeNumerator
+    }
+
+    function addV2Router(address _router) public onlyOwner {
+        if (_router == address(0)) {
+            revert ZeroAddress();
+        }
+        if (supportedV2Routers.length > 0) {
+            for (uint256 i = 0; i < supportedV2Routers.length; i++) {
+                if (supportedV2Routers[i] == _router) {
+                    revert NoChange();
+                }
+            }
+        }
+        supportedV2Routers.push(_router);
+        emit V2RouterAdded(_router);
+    }
+
+    function removeV2Router(uint256 _index) external onlyOwner {
+        if (supportedV2Routers.length == 0) {
+            revert NoChange();
+        }
+        if (_index > supportedV2Routers.length) {
+            revert IndexOutOfRange();
+        }
+        address _removedRouter = supportedV2Routers[_index];
+        supportedV2Routers[_index] = supportedV2Routers[
+            supportedV2Routers.length - 1
+        ];
+        supportedV2Routers.pop();
+        emit V2RouterRemoved(_removedRouter);
+    }
+
+    function addV3Router(address _router) public onlyOwner {
+        if (_router == address(0)) {
+            revert ZeroAddress();
+        }
+        if (supportedV3Routers.length > 0) {
+            for (uint256 i = 0; i < supportedV3Routers.length; i++) {
+                if (supportedV3Routers[i] == _router) {
+                    revert NoChange();
+                }
+            }
+        }
+        supportedV3Routers.push(_router);
+        emit V3RouterAdded(_router);
+    }
+
+    function removeV3Router(uint256 _index) external onlyOwner {
+        if (supportedV3Routers.length == 0) {
+            revert NoChange();
+        }
+        if (_index > supportedV3Routers.length) {
+            revert IndexOutOfRange();
+        }
+        address _removedRouter = supportedV3Routers[_index];
+        supportedV3Routers[_index] = supportedV3Routers[
+            supportedV3Routers.length - 1
+        ];
+        supportedV3Routers.pop();
+        emit V3RouterRemoved(_removedRouter);
     }
 
     ///////////////
@@ -322,6 +398,120 @@ contract DecentralizedExchangeNetwork is
         partner = _newPartner;
     }
 
+    /////////////////////
+    /// RATE SHOPPING ///
+    /////////////////////
+
+    function checkV2Rate(
+        address _router,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn
+    ) public view returns (uint256) {
+        if (_router == address(0) || _amountIn == 0) return 0;
+
+        address[] memory _path = new address[](2);
+        _path[0] = _tokenIn;
+        _path[1] = _tokenOut;
+
+        try IUniswapV2Router02(_router).getAmountsOut(_amountIn, _path) returns (
+            uint256[] memory _amounts
+        ) {
+            return _amounts[1]; // single-hop => amounts[1]
+        } catch {
+            // If getAmountsOut reverts or fails, return 0
+            return 0;
+        }
+    }
+
+    function checkV3Rate(
+        address _router,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn,
+        uint24 _fee
+    ) public returns (uint256) {
+        if (_router == address(0) || _amountIn == 0) return 0;
+
+        ISwapRouter.ExactInputSingleParams memory _params = ISwapRouter
+            .ExactInputSingleParams({
+                tokenIn: _tokenIn,
+                tokenOut: _tokenOut,
+                fee: _fee,
+                recipient: address(this), // we just need a placeholder
+                deadline: block.timestamp, // or some future time
+                amountIn: _amountIn,
+                amountOutMinimum: 1, // to avoid revert from 0 output
+                sqrtPriceLimitX96: 0 // no price limit
+            });
+
+        // We do a "staticcall" by using `callStatic`. 
+        // If it reverts (e.g. no liquidity, missing approvals, etc.), we catch and return 0.
+        try ISwapRouter(_router).exactInputSingle{value: 0}(_params) returns (
+            uint256 _amountOut
+        ) {
+            return _amountOut;
+        } catch {
+            return 0;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 4. RATE-SHOP ACROSS ALL REGISTERED V2 + V3 ROUTERS
+    // ------------------------------------------------------------------
+
+    /**
+     * @notice Returns the highest single-hop output across:
+     *          - All stored V2 routers
+     *          - All stored V3 routers (with the specified feeTier)
+     * @dev If you want to check multiple fee tiers, call this multiple times
+     *      or code a loop externally. This is a single-tier version for brevity.
+     *
+     * @param _tokenIn      The token you're selling
+     * @param _tokenOut     The token you're buying
+     * @param _amountIn     The amountIn
+     * @param _feeTier      The V3 fee tier (e.g. 500, 3000, 10000)
+     *
+     * @return _routerUsed  The router that yields the best rate
+     * @return _versionUsed 2 or 3 (Uniswap version)
+     * @return _highestOut  The best output found
+     */
+    function getBestRate(
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn,
+        uint24 _feeTier
+    ) external returns (
+            address _routerUsed,
+            uint8 _versionUsed,
+            uint256 _highestOut
+    ) {
+        // 1) Check all V2 routers
+        for (uint256 _i = 0; _i < supportedV2Routers.length; _i++) {
+            address _v2 = supportedV2Routers[_i];
+            uint256 _out = checkV2Rate(_v2, _tokenIn, _tokenOut, _amountIn);
+            if (_out > _highestOut) {
+                _highestOut = _out;
+                _routerUsed = _v2;
+                _versionUsed = 2;
+            }
+        }
+
+        // 2) Check all V3 routers
+        for (uint256 _i = 0; _i < supportedV3Routers.length; _i++) {
+            address _v3 = supportedV3Routers[_i];
+            // This is not a view call— we do try/catch with `callStatic`
+            uint256 _out = checkV3Rate(_v3, _tokenIn, _tokenOut, _amountIn, _feeTier);
+            if (_out > _highestOut) {
+                _highestOut = _out;
+                _routerUsed = _v3;
+                _versionUsed = 3;
+            }
+        }
+
+        return (_routerUsed, _versionUsed, _highestOut);
+    }
+    
     ///////////////////////////////
     /// EXTERNAL SWAP FUNCTIONS ///
     ///////////////////////////////
@@ -1454,9 +1644,11 @@ contract DecentralizedExchangeNetwork is
         );
     }
 
-    //////////////////////////
-    /// BASE FUNCTIONALITY ///
-    //////////////////////////
-    
-    receive() external payable {}
+    function getSupportedV2Routers() external view returns (address[] memory) {
+        return supportedV2Routers;
+    }
+
+    function getSupportedV3Routers() external view returns (address[] memory) {
+        return supportedV3Routers;
+    }
 }

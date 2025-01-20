@@ -3,7 +3,7 @@
     "version": "2.0.0",
     "scripts": {
         "compile": "hardhat compile",
-        "test": "hardhat test"
+        "test": "hardhat test --network localhost"
     },
     "devDependencies": {
         "@nomicfoundation/hardhat-chai-matchers": "^2.0.8",

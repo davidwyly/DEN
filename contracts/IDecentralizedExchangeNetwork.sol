@@ -25,4 +25,12 @@ interface IDecentralizedExchangeNetwork {
         address _tokenOut,
         uint256 _amountOutMin
     ) external payable returns (uint256 amountOut);
+
+    function getSupportedV2Routers() external view returns (address[] memory);
+    function getSupportedV3Routers() external view returns (address[] memory);
+
+    function addV2Router(address _router) external;
+    function removeV2Router(uint256 _index) external;
+    function addV3Router(address _router) external;
+    function removeV3Router(uint256 _index) external;
 }

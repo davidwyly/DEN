@@ -17,6 +17,10 @@ const PARTNER_FEE = 50;
 
 let v4SwapLibAddress: string;
 
+async function futureDeadline(): Promise<number> {
+    return (await ethers.provider.getBlock("latest"))!.timestamp + 3600;
+}
+
 const erc20Abi = [
     "function approve(address spender, uint256 amount) returns (bool)",
     "function balanceOf(address owner) view returns (uint256)",
@@ -88,7 +92,7 @@ describe("TDD Bug Fixes", function () {
 
             // Now do the actual DEN swap
             const usdcBefore = await usdc.balanceOf(deployer.address);
-            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, { value: swapAmount });
+            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, await futureDeadline(), { value: swapAmount });
             const usdcAfter = await usdc.balanceOf(deployer.address);
             const actualOutput = usdcAfter - usdcBefore;
 
@@ -143,7 +147,7 @@ describe("TDD Bug Fixes", function () {
             // We can't get return value from a state-changing call directly in ethers v6,
             // but we CAN check if the function signature includes a return value by using
             // the contract's interface to call it
-            const tx = await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: swapAmount });
+            const tx = await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: swapAmount });
             const receipt = await tx.wait();
             const usdcAfter = await usdc.balanceOf(deployer.address);
             const actualReceived = usdcAfter - usdcBefore;
@@ -169,7 +173,7 @@ describe("TDD Bug Fixes", function () {
 
         async function acquireUSDC(): Promise<bigint> {
             // Swap ETH for USDC first to get test tokens
-            await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("2") });
+            await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: ethers.parseEther("2") });
             return await usdc.balanceOf(deployer.address);
         }
 
@@ -184,7 +188,7 @@ describe("TDD Bug Fixes", function () {
             await usdc.approve(await den.getAddress(), swapAmount);
 
             // Swap USDC → ETH
-            const tx = await den.swapTokenForETH(V3_USDC_3000, USDC, swapAmount, 1);
+            const tx = await den.swapTokenForETH(V3_USDC_3000, USDC, swapAmount, 1, await futureDeadline());
             const receipt = await tx.wait();
             const gasUsed = receipt!.gasUsed * receipt!.gasPrice;
 
@@ -194,13 +198,10 @@ describe("TDD Bug Fixes", function () {
             console.log("  USDC swapped:", swapAmount.toString());
             console.log("  ETH received:", ethers.formatEther(ethReceived));
 
-            // Verify: system and partner fee receivers got fees
-            const sysFRBal = await ethers.provider.getBalance(sysFR.address);
-            const partFRBal = await ethers.provider.getBalance(partFR.address);
-
+            // Verify: fees accumulated in the contract (pull-based)
             expect(ethReceived).to.be.gt(0, "No ETH received from Token→ETH swap");
-            expect(sysFRBal).to.be.gt(0, "System fee receiver got no fees");
-            expect(partFRBal).to.be.gt(0, "Partner fee receiver got no fees");
+            expect(await den.pendingSystemFeesETH()).to.be.gt(0, "No system fees accumulated");
+            expect(await den.pendingPartnerFeesETH()).to.be.gt(0, "No partner fees accumulated");
         });
 
         it("RED: swapTokenForETH on V2 should return ETH to the caller", async function () {
@@ -210,7 +211,7 @@ describe("TDD Bug Fixes", function () {
             await usdc.approve(await den.getAddress(), swapAmount);
 
             const ethBefore = await ethers.provider.getBalance(deployer.address);
-            const tx = await den.swapTokenForETH(V2_USDC_POOL, USDC, swapAmount, 1);
+            const tx = await den.swapTokenForETH(V2_USDC_POOL, USDC, swapAmount, 1, await futureDeadline());
             const receipt = await tx.wait();
             const gasUsed = receipt!.gasUsed * receipt!.gasPrice;
 
@@ -235,13 +236,13 @@ describe("TDD Bug Fixes", function () {
 
         it("RED: swapTokenForToken should revert if tokenIn == WETH", async function () {
             await expect(
-                den.swapTokenForToken(V3_USDC_3000, WETH_ADDR, USDC, ethers.parseEther("1"), 1)
+                den.swapTokenForToken(V3_USDC_3000, WETH_ADDR, USDC, ethers.parseEther("1"), 1, await futureDeadline())
             ).to.be.revertedWithCustomError(den, "CannotHaveWETHAsTokenIn");
         });
 
         it("RED: swapTokenForToken should revert if tokenOut == WETH", async function () {
             await expect(
-                den.swapTokenForToken(V3_USDC_3000, USDC, WETH_ADDR, 1000000n, 1)
+                den.swapTokenForToken(V3_USDC_3000, USDC, WETH_ADDR, 1000000n, 1, await futureDeadline())
             ).to.be.revertedWithCustomError(den, "CannotHaveWETHAsTokenOut");
         });
     });
@@ -254,7 +255,7 @@ describe("TDD Bug Fixes", function () {
         it("RED: swap should revert when amountOutMin exceeds actual output", async function () {
             // Set an impossibly high amountOutMin
             await expect(
-                den.swapETHForToken(V3_USDC_3000, USDC, ethers.parseEther("999999"), { value: ethers.parseEther("0.001") })
+                den.swapETHForToken(V3_USDC_3000, USDC, ethers.parseEther("999999"), await futureDeadline(), { value: ethers.parseEther("0.001") })
             ).to.be.revertedWithCustomError(den, "ReceivedLessThanMinimum");
         });
 
@@ -262,18 +263,12 @@ describe("TDD Bug Fixes", function () {
             const swapAmount = ethers.parseEther("1");
             const customFee = 100; // 1% partner fee
 
-            const sysBefore = await ethers.provider.getBalance(sysFR.address);
-            const partBefore = await ethers.provider.getBalance(partFR.address);
-
-            await den.swapETHForTokenWithCustomFee(V3_USDC_3000, USDC, 1, customFee, { value: swapAmount });
-
-            const sysReceived = (await ethers.provider.getBalance(sysFR.address)) - sysBefore;
-            const partReceived = (await ethers.provider.getBalance(partFR.address)) - partBefore;
+            await den.swapETHForTokenWithCustomFee(V3_USDC_3000, USDC, 1, customFee, await futureDeadline(), { value: swapAmount });
 
             // System fee should be 0.15% of 1 ETH = 0.0015 ETH
-            expect(sysReceived).to.equal(ethers.parseEther("0.0015"));
+            expect(await den.pendingSystemFeesETH()).to.equal(ethers.parseEther("0.0015"));
             // Partner fee should be 1% of 1 ETH = 0.01 ETH
-            expect(partReceived).to.equal(ethers.parseEther("0.01"));
+            expect(await den.pendingPartnerFeesETH()).to.equal(ethers.parseEther("0.01"));
         });
 
         it("RED: emergency withdraw should work after ETH is sent to contract", async function () {

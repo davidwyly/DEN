@@ -48,6 +48,10 @@ const erc20Abi = [
 
 let v4SwapLibAddress: string;
 
+async function futureDeadline(): Promise<number> {
+    return (await ethers.provider.getBlock("latest"))!.timestamp + 3600;
+}
+
 async function deployLib(deployer: HardhatEthersSigner): Promise<string> {
     const f = await ethers.getContractFactory("V4SwapLib");
     const lib = await f.connect(deployer).deploy();
@@ -290,29 +294,27 @@ describe("Decentralized Exchange Network", function () {
 
         it("should swap ETH for USDC on V2", async function () {
             const swapAmt = ethers.parseEther("1");
-            const sysBefore = await ethers.provider.getBalance(sysFR.address);
-            const partBefore = await ethers.provider.getBalance(partFR.address);
 
-            await expect(den.swapETHForToken(V2_USDC_POOL, USDC, 100, { value: swapAmt }))
+            await expect(den.swapETHForToken(V2_USDC_POOL, USDC, 100, await futureDeadline(), { value: swapAmt }))
                 .to.not.be.reverted;
 
-            expect(await ethers.provider.getBalance(sysFR.address)).to.be.gt(sysBefore);
-            expect(await ethers.provider.getBalance(partFR.address)).to.be.gt(partBefore);
+            expect(await den.pendingSystemFeesETH()).to.be.gt(0);
+            expect(await den.pendingPartnerFeesETH()).to.be.gt(0);
             expect(await usdc.balanceOf(deployer.address)).to.be.gt(0);
         });
 
         it("should revert swap ETH for WETH", async function () {
-            await expect(den.swapETHForToken(V2_USDC_POOL, WETH_ADDR, 1, { value: ethers.parseEther("1") }))
+            await expect(den.swapETHForToken(V2_USDC_POOL, WETH_ADDR, 1, await futureDeadline(), { value: ethers.parseEther("1") }))
                 .to.be.revertedWithCustomError(den, "CannotHaveWETHAsTokenOut");
         });
 
         it("should revert swap with zero value", async function () {
-            await expect(den.swapETHForToken(V2_USDC_POOL, USDC, 1, { value: 0 }))
+            await expect(den.swapETHForToken(V2_USDC_POOL, USDC, 1, await futureDeadline(), { value: 0 }))
                 .to.be.revertedWithCustomError(den, "ZeroValueForMsgValue");
         });
 
         it("should revert swap with zero amountOutMin", async function () {
-            await expect(den.swapETHForToken(V2_USDC_POOL, USDC, 0, { value: ethers.parseEther("1") }))
+            await expect(den.swapETHForToken(V2_USDC_POOL, USDC, 0, await futureDeadline(), { value: ethers.parseEther("1") }))
                 .to.be.revertedWithCustomError(den, "ZeroValueForAmountOutMin");
         });
     });
@@ -331,21 +333,19 @@ describe("Decentralized Exchange Network", function () {
 
         it("should swap ETH for USDC on V3", async function () {
             const swapAmt = ethers.parseEther("1");
-            const sysBefore = await ethers.provider.getBalance(sysFR.address);
-            const partBefore = await ethers.provider.getBalance(partFR.address);
 
-            await expect(den.swapETHForToken(V3_USDC_3000, USDC, 100, { value: swapAmt }))
+            await expect(den.swapETHForToken(V3_USDC_3000, USDC, 100, await futureDeadline(), { value: swapAmt }))
                 .to.not.be.reverted;
 
-            expect(await ethers.provider.getBalance(sysFR.address)).to.be.gt(sysBefore);
-            expect(await ethers.provider.getBalance(partFR.address)).to.be.gt(partBefore);
+            expect(await den.pendingSystemFeesETH()).to.be.gt(0);
+            expect(await den.pendingPartnerFeesETH()).to.be.gt(0);
             expect(await usdc.balanceOf(deployer.address)).to.be.gt(0);
         });
 
         it("should swap ETH for USDC with custom fee", async function () {
             const swapAmt = ethers.parseEther("1");
             await expect(
-                den.swapETHForTokenWithCustomFee(V3_USDC_3000, USDC, 100, 100, { value: swapAmt })
+                den.swapETHForTokenWithCustomFee(V3_USDC_3000, USDC, 100, 100, await futureDeadline(), { value: swapAmt })
             ).to.not.be.reverted;
 
             expect(await usdc.balanceOf(deployer.address)).to.be.gt(0);
@@ -385,6 +385,24 @@ describe("Decentralized Exchange Network", function () {
         it("should revert on zero amount", async function () {
             await expect(estimator.estimateAmountOut(V3_USDC_3000, WETH_ADDR, 0, 50, 15, 10000))
                 .to.be.revertedWithCustomError(estimator, "ZeroValueForAmountIn");
+        });
+
+        it("should discover V2 and V3 pools for a token pair", async function () {
+            const v2Routers = await den.getSupportedV2Routers();
+            const v3Routers = await den.getSupportedV3Routers();
+            // Need at least one router registered
+            await den.connect(deployer).addV2Router(V2_ROUTER);
+            await den.connect(deployer).addV3Router(V3_ROUTER);
+
+            const pools = await estimator.discoverPools(
+                [V2_ROUTER], [V3_ROUTER], WETH_ADDR, USDC
+            );
+
+            expect(pools.length).to.be.gt(0, "Should discover at least one pool");
+            console.log("  Discovered pools:", pools.length);
+            for (const pool of pools) {
+                console.log(`    V${pool.version} pool: ${pool.poolAddress} fee: ${pool.fee}`);
+            }
         });
     });
 
@@ -482,44 +500,44 @@ describe("Decentralized Exchange Network", function () {
         // See: https://github.com/NomicFoundation/hardhat/issues/5511
         it.skip("should swap ETH for USDC on V4 (requires live deployment)", async function () {
             const swapAmt = ethers.parseEther("1");
-            await expect(den.swapETHForTokenV4(poolId, USDC, 1, { value: swapAmt }))
+            await expect(den.swapETHForTokenV4(poolId, USDC, 1, await futureDeadline(), { value: swapAmt }))
                 .to.emit(den, "SwapV4");
         });
 
         it("should revert if PM not set", async function () {
             const freshDen = await deployDEN(deployer, partner, sysFR, partFR, PARTNER_FEE);
-            await expect(freshDen.swapETHForTokenV4(poolId, USDC, 1, { value: ethers.parseEther("1") }))
+            await expect(freshDen.swapETHForTokenV4(poolId, USDC, 1, await futureDeadline(), { value: ethers.parseEther("1") }))
                 .to.be.revertedWithCustomError(freshDen, "V4PoolManagerNotSet");
         });
 
         it("should revert if pool not registered", async function () {
             const fakeId = ethers.keccak256(ethers.toUtf8Bytes("fake"));
-            await expect(den.swapETHForTokenV4(fakeId, USDC, 1, { value: ethers.parseEther("1") }))
+            await expect(den.swapETHForTokenV4(fakeId, USDC, 1, await futureDeadline(), { value: ethers.parseEther("1") }))
                 .to.be.revertedWithCustomError(den, "V4PoolNotRegistered");
         });
 
         it("should revert with zero msg.value", async function () {
-            await expect(den.swapETHForTokenV4(poolId, USDC, 1, { value: 0 }))
+            await expect(den.swapETHForTokenV4(poolId, USDC, 1, await futureDeadline(), { value: 0 }))
                 .to.be.revertedWithCustomError(den, "ZeroValueForMsgValue");
         });
 
         it("should revert with zero amountOutMin", async function () {
-            await expect(den.swapETHForTokenV4(poolId, USDC, 0, { value: ethers.parseEther("1") }))
+            await expect(den.swapETHForTokenV4(poolId, USDC, 0, await futureDeadline(), { value: ethers.parseEther("1") }))
                 .to.be.revertedWithCustomError(den, "ZeroValueForAmountOutMin");
         });
 
         it("should revert with WETH as tokenOut", async function () {
-            await expect(den.swapETHForTokenV4(poolId, WETH_ADDR, 1, { value: ethers.parseEther("1") }))
+            await expect(den.swapETHForTokenV4(poolId, WETH_ADDR, 1, await futureDeadline(), { value: ethers.parseEther("1") }))
                 .to.be.revertedWithCustomError(den, "CannotHaveWETHAsTokenOut");
         });
 
         it("should revert swapTokenForETHV4 with zero amountIn", async function () {
-            await expect(den.swapTokenForETHV4(poolId, USDC, 0, 1))
+            await expect(den.swapTokenForETHV4(poolId, USDC, 0, 1, await futureDeadline()))
                 .to.be.revertedWithCustomError(den, "ZeroValueForAmountIn");
         });
 
         it("should revert swapTokenForTokenV4 with same tokens", async function () {
-            await expect(den.swapTokenForTokenV4(poolId, USDC, USDC, 100, 1))
+            await expect(den.swapTokenForTokenV4(poolId, USDC, USDC, 100, 1, await futureDeadline()))
                 .to.be.revertedWithCustomError(den, "TokensCannotBeEqual");
         });
     });
@@ -642,12 +660,12 @@ describe("Decentralized Exchange Network", function () {
 
         it("should revert V2 lookup with zero router", async function () {
             await expect(den.getV2PoolFromRouter(ZERO, USDC, WETH_ADDR))
-                .to.be.revertedWithCustomError(den, "ZeroAddressForRouter");
+                .to.be.reverted;
         });
 
-        it("should revert V2 lookup with same tokens", async function () {
-            await expect(den.getV2PoolFromRouter(V2_ROUTER, USDC, USDC))
-                .to.be.revertedWithCustomError(den, "SameToken");
+        it("should return zero address for V2 lookup with same tokens", async function () {
+            const pool = await den.getV2PoolFromRouter(V2_ROUTER, USDC, USDC);
+            expect(pool).to.equal(ZERO);
         });
 
         it("should get V3 pool from factory", async function () {
@@ -668,7 +686,7 @@ describe("Decentralized Exchange Network", function () {
     // ========================================
     describe("Statistics", function () {
         it("should increment swap count on ETH→Token", async function () {
-            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, { value: ethers.parseEther("1") });
+            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, await futureDeadline(), { value: ethers.parseEther("1") });
             const stats = await den.statistics();
             expect(stats.swapETHForTokenCount).to.equal(1);
         });
@@ -681,7 +699,7 @@ describe("Decentralized Exchange Network", function () {
         it("should revert getUniswapVersion on unsupported DEX in swap", async function () {
             // USDC is not a pool, so getUniswapVersion returns 0
             // When used in swap, it should revert
-            await expect(den.swapETHForToken(USDC, WETH_ADDR, 1, { value: ethers.parseEther("0.01") }))
+            await expect(den.swapETHForToken(USDC, WETH_ADDR, 1, await futureDeadline(), { value: ethers.parseEther("0.01") }))
                 .to.be.reverted;
         });
 

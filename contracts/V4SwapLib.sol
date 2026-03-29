@@ -3,8 +3,11 @@ pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
 import "./interfaces/IV4PoolManager.sol";
 import "./FullMath.sol";
 
@@ -80,15 +83,15 @@ library V4SwapLib {
             }
             if (_sqrtPriceX96 == 0) return 0;
 
-            uint256 _sq = uint256(_sqrtPriceX96) * uint256(_sqrtPriceX96);
-            uint256 _p = FullMath.mulDiv(_sq, 1e18, 1 << 192);
+            uint256 _squaredPrice = uint256(_sqrtPriceX96) * uint256(_sqrtPriceX96);
+            uint256 _price0to1 = FullMath.mulDiv(_squaredPrice, 1e18, 1 << 192);
 
             uint256 _rawPrice;
             if (_effectiveIn == _poolKey.currency0) {
-                _rawPrice = _p;
+                _rawPrice = _price0to1;
             } else {
-                if (_p == 0) return 0;
-                _rawPrice = FullMath.mulDiv(1e18, 1e18, _p);
+                if (_price0to1 == 0) return 0;
+                _rawPrice = FullMath.mulDiv(1e18, 1e18, _price0to1);
             }
 
             return FullMath.mulDiv(_amountIn, _rawPrice, 1e18);
@@ -126,8 +129,8 @@ library V4SwapLib {
 
         // Then apply standard V2 pool fee (0.3% = 997/1000)
         uint256 _withPoolFee = _afterDENFees * 997;
-        uint256 _d = (_rIn * 1000) + _withPoolFee;
-        return (_withPoolFee * _rOut) / _d;
+        uint256 _denominator = (_rIn * 1000) + _withPoolFee;
+        return (_withPoolFee * _rOut) / _denominator;
     }
 
     /**
@@ -137,7 +140,7 @@ library V4SwapLib {
         address _pool,
         address _tokenIn,
         uint256 _amountIn
-    ) external view returns (uint256) {
+    ) public view returns (uint256) {
         IUniswapV3Pool _v3 = IUniswapV3Pool(_pool);
         (uint160 _sqrtPriceX96, , , , , , ) = _v3.slot0();
         uint256 _sq = uint256(_sqrtPriceX96) * uint256(_sqrtPriceX96);
@@ -200,8 +203,126 @@ library V4SwapLib {
         uint256 _denom = _feeConfig >> 16;
         uint256 _totalFee = ((_feeConfig >> 8) & 0xFF) + (_feeConfig & 0xFF);
         uint256 _withFee = _amountIn * (_denom - _totalFee);
-        uint256 _d = (_reserveIn * _denom) - _withFee;
-        if (_d == 0) return 0;
-        return (_withFee * _reserveOut) / _d;
+        uint256 _denominator = (_reserveIn * _denom) - _withFee;
+        if (_denominator == 0) return 0;
+        return (_withFee * _reserveOut) / _denominator;
+    }
+
+    /**
+     * @dev Determines Uniswap version of a pool (2, 3, or 0 for unknown).
+     */
+    function getUniswapVersion(address _pool) external view returns (uint8) {
+        try IUniswapV2Pair(_pool).getReserves() { return 2; } catch {}
+        try IUniswapV3Pool(_pool).maxLiquidityPerTick() { return 3; } catch {}
+        return 0;
+    }
+
+    // ============================================================
+    //  Rate shopping helpers (moved from main contract for size)
+    // ============================================================
+
+    function checkV2Rate(
+        address _router,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn
+    ) external view returns (uint256) {
+        if (_router == address(0) || _amountIn == 0) return 0;
+        address[] memory _path = new address[](2);
+        _path[0] = _tokenIn;
+        _path[1] = _tokenOut;
+        try IUniswapV2Router02(_router).getAmountsOut(_amountIn, _path) returns (uint256[] memory _amounts) {
+            return _amounts[1];
+        } catch {
+            return 0;
+        }
+    }
+
+    function checkV3Rate(
+        address _router,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn,
+        uint24 _fee
+    ) external view returns (uint256) {
+        if (_router == address(0) || _amountIn == 0) return 0;
+        address _factory;
+        try IUniswapV2Router02(_router).factory() returns (address f) {
+            _factory = f;
+        } catch {
+            return 0;
+        }
+        try IUniswapV3Factory(_factory).getPool(_tokenIn, _tokenOut, _fee) returns (address _pool) {
+            if (_pool == address(0)) return 0;
+            return estimateV3(_pool, _tokenIn, _amountIn);
+        } catch {
+            return 0;
+        }
+    }
+
+    // ============================================================
+    //  Pool discovery — find pools for a token pair across venues
+    // ============================================================
+
+    struct DiscoveredPool {
+        uint8 version;       // 2, 3, or 4
+        address poolAddress; // V2/V3 pool address (address(0) for V4)
+        bytes32 poolId;      // V4 pool ID (bytes32(0) for V2/V3)
+        uint24 fee;          // pool fee tier
+    }
+
+    /**
+     * @dev Finds all available pools for a token pair across registered V2 routers and V3 factories.
+     *      Returns up to maxResults pools. The frontend calls this to discover where liquidity exists.
+     *
+     * @param _v2Routers   Array of registered V2 router addresses
+     * @param _v3Routers   Array of registered V3 router addresses (SwapRouter with factory() method)
+     * @param _tokenA      First token (use WETH address for ETH pairs)
+     * @param _tokenB      Second token
+     * @return pools       Array of discovered pools with version, address, and fee info
+     */
+    function discoverPools(
+        address[] memory _v2Routers,
+        address[] memory _v3Routers,
+        address _tokenA,
+        address _tokenB
+    ) external view returns (DiscoveredPool[] memory pools) {
+        // Pre-allocate max possible: v2Routers + v3Routers*4 fee tiers
+        uint256 _maxPools = _v2Routers.length + (_v3Routers.length * 4);
+        DiscoveredPool[] memory _results = new DiscoveredPool[](_maxPools);
+        uint256 _count = 0;
+
+        // Check V2 routers
+        for (uint256 i = 0; i < _v2Routers.length; i++) {
+            try IUniswapV2Router02(_v2Routers[i]).factory() returns (address _factory) {
+                try IUniswapV2Factory(_factory).getPair(_tokenA, _tokenB) returns (address _pair) {
+                    if (_pair != address(0)) {
+                        _results[_count] = DiscoveredPool(2, _pair, bytes32(0), 3000);
+                        _count++;
+                    }
+                } catch {}
+            } catch {}
+        }
+
+        // Check V3 routers at common fee tiers
+        uint24[4] memory _feeTiers = [uint24(100), uint24(500), uint24(3000), uint24(10000)];
+        for (uint256 i = 0; i < _v3Routers.length; i++) {
+            try IUniswapV2Router02(_v3Routers[i]).factory() returns (address _factory) {
+                for (uint256 j = 0; j < 4; j++) {
+                    try IUniswapV3Factory(_factory).getPool(_tokenA, _tokenB, _feeTiers[j]) returns (address _pool) {
+                        if (_pool != address(0)) {
+                            _results[_count] = DiscoveredPool(3, _pool, bytes32(0), _feeTiers[j]);
+                            _count++;
+                        }
+                    } catch {}
+                }
+            } catch {}
+        }
+
+        // Copy to correctly-sized array
+        pools = new DiscoveredPool[](_count);
+        for (uint256 i = 0; i < _count; i++) {
+            pools[i] = _results[i];
+        }
     }
 }

@@ -70,16 +70,29 @@ contract DENEstimator {
         return V4SwapLib.checkRate(v4PoolManager, WETH, _poolKey, _tokenIn, _tokenOut, _amountIn);
     }
 
-    function _getUniswapVersion(address _pool) internal view returns (uint8) {
-        // V2 check
-        (bool s2,) = _pool.staticcall(abi.encodeWithSignature("getReserves()"));
-        if (s2) return 2;
-
-        // V3 check
-        (bool s3,) = _pool.staticcall(abi.encodeWithSignature("maxLiquidityPerTick()"));
-        if (s3) return 3;
-
-        return 0;
+    /**
+     * @dev Discovers all available V2 and V3 pools for a token pair.
+     *      The frontend calls this to find where liquidity exists.
+     *
+     * @param _v2Routers Array of registered V2 router addresses (get from DEN.getSupportedV2Routers())
+     * @param _v3Routers Array of registered V3 router addresses (get from DEN.getSupportedV3Routers())
+     * @param _tokenA First token address (use WETH for ETH pairs)
+     * @param _tokenB Second token address
+     */
+    function discoverPools(
+        address[] calldata _v2Routers,
+        address[] calldata _v3Routers,
+        address _tokenA,
+        address _tokenB
+    ) external view returns (V4SwapLib.DiscoveredPool[] memory) {
+        return V4SwapLib.discoverPools(_v2Routers, _v3Routers, _tokenA, _tokenB);
     }
 
+    function _getUniswapVersion(address _pool) internal view returns (uint8) {
+        (bool s2,) = _pool.staticcall(abi.encodeWithSignature("getReserves()"));
+        if (s2) return 2;
+        (bool s3,) = _pool.staticcall(abi.encodeWithSignature("maxLiquidityPerTick()"));
+        if (s3) return 3;
+        return 0;
+    }
 }

@@ -40,9 +40,15 @@ contract DecentralizedExchangeNetwork is
         uint64 swapTokenForTokenCount;
     }
 
-    // mappings
+    // Fee tracking (historical, informational only)
     mapping ( address => uint256 ) systemFeesCollected;
     mapping ( address => uint256 ) partnerFeesCollected;
+
+    // Pull-based fee accumulation (pending until claimed)
+    uint256 public pendingSystemFeesETH;
+    uint256 public pendingPartnerFeesETH;
+    mapping ( address => uint256 ) public pendingSystemFeesToken;
+    mapping ( address => uint256 ) public pendingPartnerFeesToken;
 
     address[] public supportedV2Routers;
     address[] public supportedV3Routers;
@@ -163,12 +169,7 @@ contract DecentralizedExchangeNetwork is
     error InsufficientTokenBalance();
     error InsufficientTokenAllowance();
     error InvalidTokensForV2Pair();
-    error ZeroAddressForRouter();
-    error ZeroAddressForToken0();
-    error ZeroAddressForToken1();
-    error SameToken();
     error InvalidTokensForV3Pool();
-    error DivideByZero();
     error InsufficientInputAmount();
     error InsufficientLiquidity();
     error InsufficientETHBalance();
@@ -184,6 +185,8 @@ contract DecentralizedExchangeNetwork is
     error InvalidV4PoolKey();
     error ReceivedLessThanMinimum();
     error UnsupportedDEX();
+    error NoFeesToClaim();
+    error DeadlineExpired();
 
     // modifiers
     modifier onlyPartner() {
@@ -192,6 +195,7 @@ contract DecentralizedExchangeNetwork is
         }
         _;
     }
+
 
     ///////////////////
     /// CONSTRUCTOR ///
@@ -497,53 +501,12 @@ contract DecentralizedExchangeNetwork is
     /// RATE SHOPPING ///
     /////////////////////
 
-    function checkV2Rate(
-        address _router,
-        address _tokenIn,
-        address _tokenOut,
-        uint256 _amountIn
-    ) public view returns (uint256) {
-        if (_router == address(0) || _amountIn == 0) return 0;
-
-        address[] memory _path = new address[](2);
-        _path[0] = _tokenIn;
-        _path[1] = _tokenOut;
-
-        try IUniswapV2Router02(_router).getAmountsOut(_amountIn, _path) returns (
-            uint256[] memory _amounts
-        ) {
-            return _amounts[1]; // single-hop => amounts[1]
-        } catch {
-            // If getAmountsOut reverts or fails, return 0
-            return 0;
-        }
+    function checkV2Rate(address _router, address _tokenIn, address _tokenOut, uint256 _amountIn) public view returns (uint256) {
+        return V4SwapLib.checkV2Rate(_router, _tokenIn, _tokenOut, _amountIn);
     }
 
-    function checkV3Rate(
-        address _router,
-        address _tokenIn,
-        address _tokenOut,
-        uint256 _amountIn,
-        uint24 _fee
-    ) public view returns (uint256) {
-        if (_router == address(0) || _amountIn == 0) return 0;
-
-        // Look up the V3 factory from the router to find the pool
-        address _factory;
-        try IUniswapV2Router02(_router).factory() returns (address f) {
-            _factory = f;
-        } catch {
-            return 0;
-        }
-
-        // Find the pool for this pair and fee
-        try IUniswapV3Factory(_factory).getPool(_tokenIn, _tokenOut, _fee) returns (address _pool) {
-            if (_pool == address(0)) return 0;
-            // Use sqrtPriceX96-based estimate via the library
-            return V4SwapLib.estimateV3(_pool, _tokenIn, _amountIn);
-        } catch {
-            return 0;
-        }
+    function checkV3Rate(address _router, address _tokenIn, address _tokenOut, uint256 _amountIn, uint24 _fee) public view returns (uint256) {
+        return V4SwapLib.checkV3Rate(_router, _tokenIn, _tokenOut, _amountIn, _fee);
     }
 
     /**
@@ -639,112 +602,34 @@ contract DecentralizedExchangeNetwork is
     * @param _tokenOut The address of the output token
     * @param _amountOutMin The minimum amount of output tokens to receive
     */
-    function swapETHForToken (
-        address _pool,
-        address _tokenOut,
-        uint256 _amountOutMin
-    ) external payable nonReentrant {
-        executeSwapETHForToken(
-            _pool,
-            _tokenOut,
-            _amountOutMin,
-            partnerFeeNumerator
-        );
+    function swapETHForToken(address _pool, address _tokenOut, uint256 _amountOutMin, uint256 _deadline) external payable nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        executeSwapETHForToken(_pool, _tokenOut, _amountOutMin, partnerFeeNumerator);
     }
 
-    /**
-    * @dev Main function to swap ETH for tokens with a custom partner fee
-    */
-    function swapETHForTokenWithCustomFee(
-        address _pool,
-        address _tokenOut,
-        uint256 _amountOutMin,
-        uint8 _customPartnerFeeNum
-    ) external payable nonReentrant {
-        executeSwapETHForToken(
-            _pool,
-            _tokenOut,
-            _amountOutMin,
-            _customPartnerFeeNum
-        );
+    function swapETHForTokenWithCustomFee(address _pool, address _tokenOut, uint256 _amountOutMin, uint8 _customPartnerFeeNum, uint256 _deadline) external payable nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        executeSwapETHForToken(_pool, _tokenOut, _amountOutMin, _customPartnerFeeNum);
     }
 
-    /**
-    * @dev Main function to swap tokens for ETH
-    */
-    function swapTokenForETH (
-        address _pool,
-        address _tokenIn,
-        uint256 _amountIn,
-        uint256 _amountOutMin
-    ) external nonReentrant {
-        executeSwapTokenForETH(
-            _pool,
-            _tokenIn,
-            _amountIn,
-            _amountOutMin,
-            partnerFeeNumerator
-        );
+    function swapTokenForETH(address _pool, address _tokenIn, uint256 _amountIn, uint256 _amountOutMin, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        executeSwapTokenForETH(_pool, _tokenIn, _amountIn, _amountOutMin, partnerFeeNumerator);
     }
 
-    /**
-    * @dev Main function to swap tokens for ETH with a custom partner fee
-    */
-    function swapTokenForETHWithCustomFee (
-        address _pool,
-        address _tokenIn,
-        uint256 _amountIn,
-        uint256 _amountOutMin,
-        uint8 _customPartnerFeeNum
-    ) external nonReentrant {
-        executeSwapTokenForETH(
-            _pool,
-            _tokenIn,
-            _amountIn,
-            _amountOutMin,
-            _customPartnerFeeNum
-        );
+    function swapTokenForETHWithCustomFee(address _pool, address _tokenIn, uint256 _amountIn, uint256 _amountOutMin, uint8 _customPartnerFeeNum, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        executeSwapTokenForETH(_pool, _tokenIn, _amountIn, _amountOutMin, _customPartnerFeeNum);
     }
 
-    /**
-    * @dev Main function to swap tokens for tokens
-    */
-    function swapTokenForToken (
-        address _pool,
-        address _tokenIn,
-        address _tokenOut,
-        uint256 _amountIn,
-        uint256 _amountOutMin
-    ) external nonReentrant {
-        executeSwapTokenForToken(
-            _pool,
-            _tokenIn,
-            _tokenOut,
-            _amountIn,
-            _amountOutMin,
-            partnerFeeNumerator
-        );
+    function swapTokenForToken(address _pool, address _tokenIn, address _tokenOut, uint256 _amountIn, uint256 _amountOutMin, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        executeSwapTokenForToken(_pool, _tokenIn, _tokenOut, _amountIn, _amountOutMin, partnerFeeNumerator);
     }
 
-    /**
-    * @dev Main function to swap tokens for tokens with a custom partner fee
-    */
-    function swapTokenForTokenWithCustomFee (
-        address _pool,
-        address _tokenIn,
-        address _tokenOut,
-        uint256 _amountIn,
-        uint256 _amountOutMin,
-        uint8 _customPartnerFeeNum
-    ) external nonReentrant {
-        executeSwapTokenForToken(
-            _pool,
-            _tokenIn,
-            _tokenOut,
-            _amountIn,
-            _amountOutMin,
-            _customPartnerFeeNum
-        );
+    function swapTokenForTokenWithCustomFee(address _pool, address _tokenIn, address _tokenOut, uint256 _amountIn, uint256 _amountOutMin, uint8 _customPartnerFeeNum, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        executeSwapTokenForToken(_pool, _tokenIn, _tokenOut, _amountIn, _amountOutMin, _customPartnerFeeNum);
     }
 
     // ============ V4 SWAP ENTRY POINTS ============
@@ -757,114 +642,34 @@ contract DecentralizedExchangeNetwork is
     * @param _tokenOut The address of the output token
     * @param _amountOutMin The minimum amount of output tokens to receive
     */
-    function swapETHForTokenV4(
-        bytes32 _poolId,
-        address _tokenOut,
-        uint256 _amountOutMin
-    ) external payable nonReentrant {
-        _executeSwapETHForTokenV4(
-            _poolId,
-            _tokenOut,
-            _amountOutMin,
-            partnerFeeNumerator
-        );
+    function swapETHForTokenV4(bytes32 _poolId, address _tokenOut, uint256 _amountOutMin, uint256 _deadline) external payable nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        _executeSwapETHForTokenV4(_poolId, _tokenOut, _amountOutMin, partnerFeeNumerator);
     }
 
-    function swapETHForTokenV4WithCustomFee(
-        bytes32 _poolId,
-        address _tokenOut,
-        uint256 _amountOutMin,
-        uint8 _customPartnerFeeNum
-    ) external payable nonReentrant {
-        _executeSwapETHForTokenV4(
-            _poolId,
-            _tokenOut,
-            _amountOutMin,
-            _customPartnerFeeNum
-        );
+    function swapETHForTokenV4WithCustomFee(bytes32 _poolId, address _tokenOut, uint256 _amountOutMin, uint8 _customPartnerFeeNum, uint256 _deadline) external payable nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        _executeSwapETHForTokenV4(_poolId, _tokenOut, _amountOutMin, _customPartnerFeeNum);
     }
 
-    /**
-    * @dev Swap tokens for ETH through a Uniswap V4 pool.
-    *
-    * @param _poolId The V4 pool ID
-    * @param _tokenIn The address of the input token
-    * @param _amountIn The amount of input tokens to swap
-    * @param _amountOutMin The minimum amount of ETH to receive
-    */
-    function swapTokenForETHV4(
-        bytes32 _poolId,
-        address _tokenIn,
-        uint256 _amountIn,
-        uint256 _amountOutMin
-    ) external nonReentrant {
-        _executeSwapTokenForETHV4(
-            _poolId,
-            _tokenIn,
-            _amountIn,
-            _amountOutMin,
-            partnerFeeNumerator
-        );
+    function swapTokenForETHV4(bytes32 _poolId, address _tokenIn, uint256 _amountIn, uint256 _amountOutMin, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        _executeSwapTokenForETHV4(_poolId, _tokenIn, _amountIn, _amountOutMin, partnerFeeNumerator);
     }
 
-    function swapTokenForETHV4WithCustomFee(
-        bytes32 _poolId,
-        address _tokenIn,
-        uint256 _amountIn,
-        uint256 _amountOutMin,
-        uint8 _customPartnerFeeNum
-    ) external nonReentrant {
-        _executeSwapTokenForETHV4(
-            _poolId,
-            _tokenIn,
-            _amountIn,
-            _amountOutMin,
-            _customPartnerFeeNum
-        );
+    function swapTokenForETHV4WithCustomFee(bytes32 _poolId, address _tokenIn, uint256 _amountIn, uint256 _amountOutMin, uint8 _customPartnerFeeNum, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        _executeSwapTokenForETHV4(_poolId, _tokenIn, _amountIn, _amountOutMin, _customPartnerFeeNum);
     }
 
-    /**
-    * @dev Swap tokens for tokens through a Uniswap V4 pool.
-    *
-    * @param _poolId The V4 pool ID
-    * @param _tokenIn The address of the input token
-    * @param _tokenOut The address of the output token
-    * @param _amountIn The amount of input tokens to swap
-    * @param _amountOutMin The minimum amount of output tokens to receive
-    */
-    function swapTokenForTokenV4(
-        bytes32 _poolId,
-        address _tokenIn,
-        address _tokenOut,
-        uint256 _amountIn,
-        uint256 _amountOutMin
-    ) external nonReentrant {
-        _executeSwapTokenForTokenV4(
-            _poolId,
-            _tokenIn,
-            _tokenOut,
-            _amountIn,
-            _amountOutMin,
-            partnerFeeNumerator
-        );
+    function swapTokenForTokenV4(bytes32 _poolId, address _tokenIn, address _tokenOut, uint256 _amountIn, uint256 _amountOutMin, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        _executeSwapTokenForTokenV4(_poolId, _tokenIn, _tokenOut, _amountIn, _amountOutMin, partnerFeeNumerator);
     }
 
-    function swapTokenForTokenV4WithCustomFee(
-        bytes32 _poolId,
-        address _tokenIn,
-        address _tokenOut,
-        uint256 _amountIn,
-        uint256 _amountOutMin,
-        uint8 _customPartnerFeeNum
-    ) external nonReentrant {
-        _executeSwapTokenForTokenV4(
-            _poolId,
-            _tokenIn,
-            _tokenOut,
-            _amountIn,
-            _amountOutMin,
-            _customPartnerFeeNum
-        );
+    function swapTokenForTokenV4WithCustomFee(bytes32 _poolId, address _tokenIn, address _tokenOut, uint256 _amountIn, uint256 _amountOutMin, uint8 _customPartnerFeeNum, uint256 _deadline) external nonReentrant {
+        if (block.timestamp > _deadline) revert DeadlineExpired();
+        _executeSwapTokenForTokenV4(_poolId, _tokenIn, _tokenOut, _amountIn, _amountOutMin, _customPartnerFeeNum);
     }
 
     //////////////////
@@ -905,11 +710,9 @@ contract DecentralizedExchangeNetwork is
         // Calculate the amount of ETH to swap by subtracting the fees
         uint256 _amountInLessFees = msg.value - (_systemFee + _partnerFee);
 
-        // Send the system fees to the system receiver
-        _sendETH(systemFeeReceiver, _systemFee);
-
-        // Send the partner fees to the partner receiver
-        _sendETH(partnerFeeReceiver, _partnerFee);
+        // Accumulate fees (pull-based — receivers claim later)
+        pendingSystemFeesETH += _systemFee;
+        pendingPartnerFeesETH += _partnerFee;
 
         // Wrap the remaining ETH to WETH in preparation for the swap
         IWETH(WETH).deposit{value: _amountInLessFees}();
@@ -981,11 +784,9 @@ contract DecentralizedExchangeNetwork is
         // Unwrap the wrapped ETH
         IWETH(_WETH).withdraw(_amountOut);
 
-        // Send the system fees to the system receiver
-        _sendETH(systemFeeReceiver, _systemFee);
-
-        // Send the partner fees to the partner receiver
-        _sendETH(partnerFeeReceiver, _partnerFee);
+        // Accumulate fees (pull-based)
+        pendingSystemFeesETH += _systemFee;
+        pendingPartnerFeesETH += _partnerFee;
 
         // Send the rest to the sender
         _sendETH(_msgSender(), _amountOutAfterTax);
@@ -1057,13 +858,11 @@ contract DecentralizedExchangeNetwork is
             revert ReceivedLessThanMinimum();
         }
 
-        // Transfer the system fees to the system receiver
-        IERC20(_tokenOut).safeTransfer(systemFeeReceiver, _systemFee);
+        // Accumulate token fees (pull-based)
+        pendingSystemFeesToken[_tokenOut] += _systemFee;
+        pendingPartnerFeesToken[_tokenOut] += _partnerFee;
 
-        // Transfer the partner fees to the partner receiver
-        IERC20(_tokenOut).safeTransfer(partnerFeeReceiver, _partnerFee);
-
-        // Transfer the rest to the sender
+        // Send the output tokens (minus fees) to the sender
         IERC20(_tokenOut).safeTransfer(_msgSender, _amountOutAfterTax);
     }
 
@@ -1095,8 +894,8 @@ contract DecentralizedExchangeNetwork is
         }
 
         uint256 _amountInLessFees = msg.value - (_systemFee + _partnerFee);
-        _sendETH(systemFeeReceiver, _systemFee);
-        _sendETH(partnerFeeReceiver, _partnerFee);
+        pendingSystemFeesETH += _systemFee;
+        pendingPartnerFeesETH += _partnerFee;
 
         V4PoolKey memory _poolKey = _findV4PoolKey(_poolId);
         V4SwapCallbackData memory _cbData;
@@ -1174,8 +973,8 @@ contract DecentralizedExchangeNetwork is
         uint256 _amountOutAfterTax = _amountOut - (_systemFee + _partnerFee);
         if (_amountOutAfterTax < _amountOutMin) revert ReceivedLessThanMinimum();
 
-        _sendETH(systemFeeReceiver, _systemFee);
-        _sendETH(partnerFeeReceiver, _partnerFee);
+        pendingSystemFeesETH += _systemFee;
+        pendingPartnerFeesETH += _partnerFee;
         _sendETH(_msgSender(), _amountOutAfterTax);
     }
 
@@ -1229,8 +1028,8 @@ contract DecentralizedExchangeNetwork is
         uint256 _amountOutAfterTax = _amountOut - (_systemFee + _partnerFee);
         if (_amountOutAfterTax < _amountOutMin) revert ReceivedLessThanMinimum();
 
-        IERC20(_tokenOut).safeTransfer(systemFeeReceiver, _systemFee);
-        IERC20(_tokenOut).safeTransfer(partnerFeeReceiver, _partnerFee);
+        pendingSystemFeesToken[_tokenOut] += _systemFee;
+        pendingPartnerFeesToken[_tokenOut] += _partnerFee;
         IERC20(_tokenOut).safeTransfer(_msgSender(), _amountOutAfterTax);
     }
 
@@ -1269,29 +1068,29 @@ contract DecentralizedExchangeNetwork is
             ""
         );
 
-        int128 _a0 = int128(_delta >> 128);
-        int128 _a1 = int128(_delta);
+        int128 _amount0Delta = int128(_delta >> 128);
+        int128 _amount1Delta = int128(_delta);
 
         // Settle input (negative delta = we owe PM; negate to get positive amount)
         {
-            uint256 _s = _cb.zeroForOne ? uint256(uint128(-_a0)) : uint256(uint128(-_a1));
+            uint256 _settleAmount = _cb.zeroForOne ? uint256(uint128(-_amount0Delta)) : uint256(uint128(-_amount1Delta));
             if (_cb.currencyIn == address(0)) {
-                _pm.settle{value: _s}();
+                _pm.settle{value: _settleAmount}();
             } else {
                 _pm.sync(_cb.currencyIn);
                 if (_cb.payer == address(this)) {
-                    IERC20(_cb.currencyIn).safeTransfer(address(_pm), _s);
+                    IERC20(_cb.currencyIn).safeTransfer(address(_pm), _settleAmount);
                 } else {
-                    IERC20(_cb.currencyIn).safeTransferFrom(_cb.payer, address(_pm), _s);
+                    IERC20(_cb.currencyIn).safeTransferFrom(_cb.payer, address(_pm), _settleAmount);
                 }
                 _pm.settle();
             }
         }
 
         // Take output (positive delta = PM owes us)
-        uint256 _t = _cb.zeroForOne ? uint256(uint128(_a1)) : uint256(uint128(_a0));
-        _pm.take(_cb.currencyOut, _cb.recipient, _t);
-        return abi.encode(_t);
+        uint256 _takeAmount = _cb.zeroForOne ? uint256(uint128(_amount1Delta)) : uint256(uint128(_amount0Delta));
+        _pm.take(_cb.currencyOut, _cb.recipient, _takeAmount);
+        return abi.encode(_takeAmount);
     }
 
     /**
@@ -1300,23 +1099,9 @@ contract DecentralizedExchangeNetwork is
     * @param _pool The address of the Uniswap pool
     * @return _uniswapVersion The Uniswap version of the pool (2, 3) or 0 if it's not a Uniswap pool
     */
-    function getUniswapVersion(address _pool) public view returns (uint8 _uniswapVersion) {
-        if (_pool == address(0)) {
-            revert ZeroAddress();
-        }
-
-        // Check for Uniswap V2 function
-        try IUniswapV2Pair(_pool).getReserves() {
-            return 2;
-        } catch {}
-
-        // Check for Uniswap V3 function
-        try IUniswapV3Pool(_pool).maxLiquidityPerTick() {
-            return 3;
-        } catch {}
-
-        // If the pool is not for a Uniswap v2 or v3 DEX, return 0
-        return 0;
+    function getUniswapVersion(address _pool) public view returns (uint8) {
+        if (_pool == address(0)) revert ZeroAddress();
+        return V4SwapLib.getUniswapVersion(_pool);
     }
 
     /**
@@ -1330,7 +1115,7 @@ contract DecentralizedExchangeNetwork is
         uint256 _partnerFee
     ) {
 
-        if (_partnerFeeNumerator == 0 || _partnerFeeNumerator > MAX_PARTNER_FEE_NUMERATOR) {
+        if (_partnerFeeNumerator > MAX_PARTNER_FEE_NUMERATOR) {
             revert PartnerFeeTooHigh();
         }
 
@@ -1550,55 +1335,11 @@ contract DecentralizedExchangeNetwork is
         return v4PoolRegistered[_poolId];
     }
 
-    /**
-    * @dev For a Uniswapv2 router and a pair of tokens, returns the address of the pool
-    */
-    function getV2PoolFromRouter(
-        address _router,
-        address _token0,
-        address _token1
-    ) external view returns (address _pool) {
-
-        if (_router == address(0)) {
-            revert ZeroAddressForRouter();
-        }
-        if (_token0 == address(0)) {
-            revert ZeroAddressForToken0();
-        }
-        if (_token1 == address(0)) {
-            revert ZeroAddressForToken1();
-        }
-        if (_token0 == _token1) {
-            revert SameToken();
-        }
-
-        address _factory = IUniswapV2Router02(_router).factory();
-        return IUniswapV2Factory(_factory).getPair(_token0, _token1);
+    function getV2PoolFromRouter(address _router, address _token0, address _token1) external view returns (address) {
+        return IUniswapV2Factory(IUniswapV2Router02(_router).factory()).getPair(_token0, _token1);
     }
 
-    /**
-    * @dev For a Uniswapv3 factory and a pair of tokens, returns the address of the pool
-    */
-    function getV3PoolFromFactory(
-        address _factory,
-        address _token0,
-        address _token1,
-        uint24 _fee
-    ) external view returns (address _pool) {
-
-        if (_factory == address(0)) {
-            revert ZeroAddressForRouter();
-        }
-        if (_token0 == address(0)) {
-            revert ZeroAddressForToken0();
-        }
-        if (_token1 == address(0)) {
-            revert ZeroAddressForToken1();
-        }
-        if (_token0 == _token1) {
-            revert SameToken();
-        }
-
+    function getV3PoolFromFactory(address _factory, address _token0, address _token1, uint24 _fee) external view returns (address) {
         return IUniswapV3Factory(_factory).getPool(_token0, _token1, _fee);
     }
 
@@ -1622,11 +1363,8 @@ contract DecentralizedExchangeNetwork is
     ) internal pure returns (uint256) {
         if (_amountIn == 0) revert InsufficientInputAmount();
         if (_reserveIn == 0 || _reserveOut == 0) revert InsufficientLiquidity();
-        // Use standard Uniswap V2 fee (0.3% = 997/1000). DEN fees are handled externally.
         uint256 _amountInWithFee = _amountIn * 997;
-        uint256 _numerator = _amountInWithFee * _reserveOut;
-        uint256 _denominator = (_reserveIn * 1000) + _amountInWithFee;
-        return _numerator / _denominator;
+        return (_amountInWithFee * _reserveOut) / ((_reserveIn * 1000) + _amountInWithFee);
     }
 
     /**
@@ -1644,9 +1382,7 @@ contract DecentralizedExchangeNetwork is
     }
 
     function _sortTokens(address _tokenA, address _tokenB) internal pure returns (address _token0, address _token1) {
-        if (_tokenA == _tokenB) revert IdenticalTokenAddresses();
         (_token0, _token1) = (_tokenA < _tokenB) ? (_tokenA, _tokenB) : (_tokenB, _tokenA);
-        if (_token0 == address(0)) revert ZeroAddress();
     }
 
     function _isValidV2TokenPool(IUniswapV2Pair p, address a, address b) internal view returns (bool) {
@@ -1659,6 +1395,38 @@ contract DecentralizedExchangeNetwork is
         return (a == t0 && b == t1) || (a == t1 && b == t0);
     }
 
+
+    ///////////////////////
+    /// FEE CLAIMING    ///
+    ///////////////////////
+
+    function claimSystemFeesETH() external {
+        uint256 _amount = pendingSystemFeesETH;
+        if (_amount == 0) revert NoFeesToClaim();
+        pendingSystemFeesETH = 0;
+        _sendETH(systemFeeReceiver, _amount);
+    }
+
+    function claimPartnerFeesETH() external {
+        uint256 _amount = pendingPartnerFeesETH;
+        if (_amount == 0) revert NoFeesToClaim();
+        pendingPartnerFeesETH = 0;
+        _sendETH(partnerFeeReceiver, _amount);
+    }
+
+    function claimSystemFeesToken(address _token) external {
+        uint256 _amount = pendingSystemFeesToken[_token];
+        if (_amount == 0) revert NoFeesToClaim();
+        pendingSystemFeesToken[_token] = 0;
+        IERC20(_token).safeTransfer(systemFeeReceiver, _amount);
+    }
+
+    function claimPartnerFeesToken(address _token) external {
+        uint256 _amount = pendingPartnerFeesToken[_token];
+        if (_amount == 0) revert NoFeesToClaim();
+        pendingPartnerFeesToken[_token] = 0;
+        IERC20(_token).safeTransfer(partnerFeeReceiver, _amount);
+    }
 
     ///////////////////////////
     /// EMERGENCY FUNCTIONS ///
@@ -1714,4 +1482,5 @@ contract DecentralizedExchangeNetwork is
     function getSupportedV4PoolCount() external view returns (uint256) {
         return supportedV4Pools.length;
     }
+
 }

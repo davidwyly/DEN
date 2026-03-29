@@ -14,6 +14,10 @@ const PARTNER_FEE = 50;
 
 let v4SwapLibAddress: string;
 
+async function futureDeadline(): Promise<number> {
+    return (await ethers.provider.getBlock("latest"))!.timestamp + 3600;
+}
+
 const erc20Abi = [
     "function approve(address spender, uint256 amount) returns (bool)",
     "function balanceOf(address owner) view returns (uint256)",
@@ -82,7 +86,7 @@ describe("Deep Edge Cases", function () {
             // Actually this might fail because the V3 pool might not accept 1 wei swaps
             // Let's find out!
             try {
-                await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: 1n });
+                await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: 1n });
                 // If it succeeds, the user got at least 1 unit of USDC
                 console.log("  1 wei swap succeeded!");
             } catch (e: any) {
@@ -129,7 +133,7 @@ describe("Deep Edge Cases", function () {
             // This swap will likely fail with ReceivedLessThanMinimum (100 wei → 0 USDC)
             // but it should NOT fail at _sendETH
             try {
-                await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: swapAmount });
+                await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: swapAmount });
             } catch (e: any) {
                 // Should be ReceivedLessThanMinimum, NOT SendETHToRecipientFailed
                 expect(e.message).to.not.include("SendETHToRecipientFailed",
@@ -217,39 +221,39 @@ describe("Deep Edge Cases", function () {
 
         it("10 consecutive V3 swaps all succeed", async function () {
             for (let i = 0; i < 10; i++) {
-                await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("0.1") });
+                await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: ethers.parseEther("0.1") });
             }
             expect(await usdc.balanceOf(deployer.address)).to.be.gt(0);
         });
 
         it("alternating V2 and V3 swaps succeed", async function () {
-            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, { value: ethers.parseEther("0.1") });
-            await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("0.1") });
-            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, { value: ethers.parseEther("0.1") });
-            await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("0.1") });
+            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, await futureDeadline(), { value: ethers.parseEther("0.1") });
+            await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: ethers.parseEther("0.1") });
+            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, await futureDeadline(), { value: ethers.parseEther("0.1") });
+            await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: ethers.parseEther("0.1") });
             expect(await usdc.balanceOf(deployer.address)).to.be.gt(0);
         });
 
         it("V3 ETH→Token followed by Token→ETH works (state fully resets)", async function () {
             // ETH → USDC
-            await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("1") });
+            await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: ethers.parseEther("1") });
             const usdcBal = await usdc.balanceOf(deployer.address);
 
             // USDC → ETH (same pool, reverse direction)
             await usdc.approve(await den.getAddress(), usdcBal);
-            await den.swapTokenForETH(V3_USDC_3000, USDC, usdcBal, 1);
+            await den.swapTokenForETH(V3_USDC_3000, USDC, usdcBal, 1, await futureDeadline());
 
             // Should have less USDC now
             expect(await usdc.balanceOf(deployer.address)).to.equal(0);
         });
 
         it("V2 ETH→Token followed by V2 Token→ETH roundtrip", async function () {
-            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, { value: ethers.parseEther("1") });
+            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, await futureDeadline(), { value: ethers.parseEther("1") });
             const usdcBal = await usdc.balanceOf(deployer.address);
             expect(usdcBal).to.be.gt(0);
 
             await usdc.approve(await den.getAddress(), usdcBal);
-            await den.swapTokenForETH(V2_USDC_POOL, USDC, usdcBal, 1);
+            await den.swapTokenForETH(V2_USDC_POOL, USDC, usdcBal, 1, await futureDeadline());
             expect(await usdc.balanceOf(deployer.address)).to.equal(0);
         });
     });
@@ -372,8 +376,9 @@ describe("Deep Edge Cases", function () {
             // Stop auto-mining to batch transactions
             await ethers.provider.send("evm_setAutomine", [false]);
 
-            const tx1 = den.connect(user1).swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("0.1") });
-            const tx2 = den.connect(user2).swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("0.1") });
+            const deadline = await futureDeadline();
+            const tx1 = den.connect(user1).swapETHForToken(V3_USDC_3000, USDC, 1, deadline, { value: ethers.parseEther("0.1") });
+            const tx2 = den.connect(user2).swapETHForToken(V3_USDC_3000, USDC, 1, deadline, { value: ethers.parseEther("0.1") });
 
             // Mine the block with both txs
             await ethers.provider.send("evm_mine", []);

@@ -21,21 +21,85 @@ interface IDecentralizedExchangeNetwork {
     function swapETHForToken(
         address _pool,
         address _tokenOut,
-        uint256 _amountOutMin
+        uint256 _amountOutMin,
+        uint256 _deadline
     ) external payable returns (uint256 amountOut);
+
+    function swapETHForTokenWithCustomFee(
+        address _pool,
+        address _tokenOut,
+        uint256 _amountOutMin,
+        uint8 _customPartnerFeeNum,
+        uint256 _deadline
+    ) external payable returns (uint256 amountOut);
+
+    function swapTokenForETH(
+        address _pool,
+        address _tokenIn,
+        uint256 _amountIn,
+        uint256 _amountOutMin,
+        uint256 _deadline
+    ) external returns (uint256 amountOut);
+
+    function swapTokenForETHWithCustomFee(
+        address _pool,
+        address _tokenIn,
+        uint256 _amountIn,
+        uint256 _amountOutMin,
+        uint8 _customPartnerFeeNum,
+        uint256 _deadline
+    ) external returns (uint256 amountOut);
+
+    function swapTokenForToken(
+        address _pool,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn,
+        uint256 _amountOutMin,
+        uint256 _deadline
+    ) external returns (uint256 amountOut);
+
+    function swapTokenForTokenWithCustomFee(
+        address _pool,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn,
+        uint256 _amountOutMin,
+        uint8 _customPartnerFeeNum,
+        uint256 _deadline
+    ) external returns (uint256 amountOut);
 
     // V4 swaps
     function swapETHForTokenV4(
         bytes32 _poolId,
         address _tokenOut,
-        uint256 _amountOutMin
+        uint256 _amountOutMin,
+        uint256 _deadline
+    ) external payable;
+
+    function swapETHForTokenV4WithCustomFee(
+        bytes32 _poolId,
+        address _tokenOut,
+        uint256 _amountOutMin,
+        uint8 _customPartnerFeeNum,
+        uint256 _deadline
     ) external payable;
 
     function swapTokenForETHV4(
         bytes32 _poolId,
         address _tokenIn,
         uint256 _amountIn,
-        uint256 _amountOutMin
+        uint256 _amountOutMin,
+        uint256 _deadline
+    ) external;
+
+    function swapTokenForETHV4WithCustomFee(
+        bytes32 _poolId,
+        address _tokenIn,
+        uint256 _amountIn,
+        uint256 _amountOutMin,
+        uint8 _customPartnerFeeNum,
+        uint256 _deadline
     ) external;
 
     function swapTokenForTokenV4(
@@ -43,7 +107,18 @@ interface IDecentralizedExchangeNetwork {
         address _tokenIn,
         address _tokenOut,
         uint256 _amountIn,
-        uint256 _amountOutMin
+        uint256 _amountOutMin,
+        uint256 _deadline
+    ) external;
+
+    function swapTokenForTokenV4WithCustomFee(
+        bytes32 _poolId,
+        address _tokenIn,
+        address _tokenOut,
+        uint256 _amountIn,
+        uint256 _amountOutMin,
+        uint8 _customPartnerFeeNum,
+        uint256 _deadline
     ) external;
 
     // Router/pool management

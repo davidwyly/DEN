@@ -15,6 +15,10 @@ const PARTNER_FEE = 50;
 
 let v4SwapLibAddress: string;
 
+async function futureDeadline(): Promise<number> {
+    return (await ethers.provider.getBlock("latest"))!.timestamp + 3600;
+}
+
 const erc20Abi = [
     "function approve(address spender, uint256 amount) returns (bool)",
     "function balanceOf(address owner) view returns (uint256)",
@@ -62,16 +66,23 @@ describe("Audit Round 2 — TDD Fixes", function () {
     // =============================================
     describe("C-2: Custom fee zero bypass", function () {
 
-        it("RED: swapETHForTokenWithCustomFee with fee=0 should revert", async function () {
-            // With the bug, this would succeed and partner gets 0 fees
-            // After fix, it should revert with PartnerFeeTooHigh or similar
+        it("RED: swapETHForTokenWithCustomFee with fee=0 should succeed (premium customer)", async function () {
+            // Partner allows 0 fee for premium customers
+            // Swap should succeed with only system fee deducted
             await expect(
-                den.swapETHForTokenWithCustomFee(V3_USDC_3000, USDC, 1, 0, { value: ethers.parseEther("1") })
-            ).to.be.reverted;
+                den.swapETHForTokenWithCustomFee(V3_USDC_3000, USDC, 1, 0, await futureDeadline(), { value: ethers.parseEther("1") })
+            ).to.not.be.reverted;
+
+            // System fee should still be collected, partner fee should be 0
+            expect(await den.pendingSystemFeesETH()).to.equal(ethers.parseEther("0.0015"));
+            expect(await den.pendingPartnerFeesETH()).to.equal(0);
         });
 
-        it("RED: getFees with partnerFee=0 should revert", async function () {
-            await expect(den.getFees(ethers.parseEther("1"), 0)).to.be.reverted;
+        it("RED: getFees with partnerFee=0 should return (systemFee, 0)", async function () {
+            const [systemFee, partnerFee] = await den.getFees(ethers.parseEther("1"), 0);
+            // System fee: 1 ETH * 15 / 10000 = 0.0015 ETH
+            expect(systemFee).to.equal(ethers.parseEther("0.0015"));
+            expect(partnerFee).to.equal(0);
         });
     });
 
@@ -80,18 +91,20 @@ describe("Audit Round 2 — TDD Fixes", function () {
     // =============================================
     describe("C-3: Reverting fee receiver should not block swaps", function () {
 
-        it("C-3 DOCUMENTED: reverting fee receiver blocks all swaps (architectural issue)", async function () {
+        it("C-3 FIXED: reverting fee receiver does NOT block swaps (pull-based fees)", async function () {
             // Set partner fee receiver code to always-revert: PUSH0 PUSH0 REVERT
             await ethers.provider.send("hardhat_setCode", [partFR.address, "0x5f5ffd"]);
 
-            // This documents that a reverting fee receiver blocks swaps
-            // Fix requires architectural change to pull-based fee collection
+            // With pull-based fees, the swap succeeds and fees accumulate in the contract
             await expect(
-                den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("1") })
-            ).to.be.revertedWithCustomError(den, "SendETHToRecipientFailed");
+                den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: ethers.parseEther("1") })
+            ).to.not.be.reverted;
 
-            console.log("  C-3 DOCUMENTED: Reverting fee receiver blocks swaps");
-            console.log("  Mitigation: Owner must verify fee receivers accept ETH");
+            // Verify fees accumulated in the contract
+            expect(await den.pendingSystemFeesETH()).to.be.gt(0);
+            expect(await den.pendingPartnerFeesETH()).to.be.gt(0);
+
+            console.log("  C-3 FIXED: Pull-based fees allow swaps even with reverting fee receiver");
         });
     });
 
@@ -116,7 +129,7 @@ describe("Audit Round 2 — TDD Fixes", function () {
 
             // Do actual swap and measure
             const usdcBefore = await usdc.balanceOf(deployer.address);
-            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, { value: swapAmount });
+            await den.swapETHForToken(V2_USDC_POOL, USDC, 1, await futureDeadline(), { value: swapAmount });
             const usdcAfter = await usdc.balanceOf(deployer.address);
             const actualOutput = usdcAfter - usdcBefore;
 
@@ -164,7 +177,7 @@ describe("Audit Round 2 — TDD Fixes", function () {
         it("Swaps should work on a freshly deployed contract without prior V3 activity", async function () {
             // This verifies that currentSwapPool=address(0) doesn't block swaps
             const usdcBefore = await usdc.balanceOf(deployer.address);
-            await den.swapETHForToken(V3_USDC_3000, USDC, 1, { value: ethers.parseEther("0.1") });
+            await den.swapETHForToken(V3_USDC_3000, USDC, 1, await futureDeadline(), { value: ethers.parseEther("0.1") });
             expect(await usdc.balanceOf(deployer.address)).to.be.gt(usdcBefore);
         });
     });

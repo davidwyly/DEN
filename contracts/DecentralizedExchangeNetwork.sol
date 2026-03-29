@@ -1440,6 +1440,10 @@ contract DecentralizedExchangeNetwork is
             revert NoETHToWithdraw();
         }
 
+        // Reset pending fee counters since the full balance is being withdrawn
+        pendingSystemFeesETH = 0;
+        pendingPartnerFeesETH = 0;
+
         _sendETH(_msgSender, _balance);
         emit EmergencyWithdrawETH(
             _msgSender,
@@ -1454,6 +1458,10 @@ contract DecentralizedExchangeNetwork is
         if (_balance == 0) {
             revert NoTokensToWithdraw();
         }
+
+        // Reset pending fee counters for this token since the full balance is being withdrawn
+        pendingSystemFeesToken[_token] = 0;
+        pendingPartnerFeesToken[_token] = 0;
 
         IERC20(_token).safeTransfer(_msgSender, _balance);
         emit EmergencyWithdrawToken(

@@ -191,24 +191,6 @@ library V4SwapLib {
     }
 
     /**
-     * @dev V2 output calculation given reserves and fee configuration.
-     */
-    function getAmountOut(
-        uint256 _amountIn,
-        uint256 _reserveIn,
-        uint256 _reserveOut,
-        uint256 _feeConfig
-    ) external pure returns (uint256) {
-        if (_amountIn == 0 || _reserveIn == 0 || _reserveOut == 0) return 0;
-        uint256 _denom = _feeConfig >> 16;
-        uint256 _totalFee = ((_feeConfig >> 8) & 0xFF) + (_feeConfig & 0xFF);
-        uint256 _withFee = _amountIn * (_denom - _totalFee);
-        uint256 _denominator = (_reserveIn * _denom) - _withFee;
-        if (_denominator == 0) return 0;
-        return (_withFee * _reserveOut) / _denominator;
-    }
-
-    /**
      * @dev Determines Uniswap version of a pool (2, 3, or 0 for unknown).
      */
     function getUniswapVersion(address _pool) external view returns (uint8) {

@@ -34,13 +34,15 @@ The main contract stays under the 24KB deployment limit by delegating V4 callbac
 
 ## Swap Paths
 
+All swap functions require a `deadline` parameter (Unix timestamp). The transaction reverts if `block.timestamp > deadline`.
+
 | Direction | V2 | V3 | V4 |
 |---|---|---|---|
-| ETH → Token | `swapETHForToken(pool, tokenOut, minOut)` | Same function (auto-detected) | `swapETHForTokenV4(poolId, tokenOut, minOut)` |
-| Token → ETH | `swapTokenForETH(pool, tokenIn, amountIn, minOut)` | Same function | `swapTokenForETHV4(poolId, tokenIn, amountIn, minOut)` |
-| Token → Token | `swapTokenForToken(pool, tokenIn, tokenOut, amountIn, minOut)` | Same function | `swapTokenForTokenV4(poolId, tokenIn, tokenOut, amountIn, minOut)` |
+| ETH → Token | `swapETHForToken(pool, tokenOut, minOut, deadline)` | Same function (auto-detected) | `swapETHForTokenV4(poolId, tokenOut, minOut, deadline)` |
+| Token → ETH | `swapTokenForETH(pool, tokenIn, amountIn, minOut, deadline)` | Same function | `swapTokenForETHV4(poolId, tokenIn, amountIn, minOut, deadline)` |
+| Token → Token | `swapTokenForToken(pool, tokenIn, tokenOut, amountIn, minOut, deadline)` | Same function | `swapTokenForTokenV4(poolId, tokenIn, tokenOut, amountIn, minOut, deadline)` |
 
-Each swap function has a `WithCustomFee` variant that accepts a custom partner fee numerator (minimum 1, maximum 235).
+Each swap function has a `WithCustomFee` variant that accepts a custom partner fee numerator (0–235). Passing 0 skips the partner fee entirely — only the system fee (0.15%) is collected. This allows partners to offer fee discounts or fee-free swaps to premium customers. Users who interact with the contract directly may also set the partner fee to 0; the system fee is always enforced regardless.
 
 ## Fee Timing
 
@@ -50,6 +52,15 @@ Each swap function has a `WithCustomFee` variant that accepts a custom partner f
 
 Pool fees (V2 0.3%, V3 variable, V4 variable) are always applied by the pool independently.
 
+## Fee Collection
+
+Fees use a **pull-based** model — they accumulate inside the DEN contract during swaps and must be claimed separately:
+
+- `claimSystemFeesETH()` / `claimSystemFeesToken(token)` — sends to `systemFeeReceiver`
+- `claimPartnerFeesETH()` / `claimPartnerFeesToken(token)` — sends to `partnerFeeReceiver`
+
+Anyone can call these functions; funds always go to the designated receiver. Swaps are never blocked by a reverting fee receiver — fees simply continue to accumulate until claimed.
+
 ## Testing
 
 ```bash
@@ -57,7 +68,7 @@ npm install
 npx hardhat test
 ```
 
-**140 tests** covering:
+**151 tests** covering:
 - All swap directions on V2 and V3 (ETH→Token, Token→ETH roundtrips)
 - V4 pool management, rate checking, and error paths
 - Fee calculation precision and zero-value edge cases
@@ -75,11 +86,10 @@ Base (Chain ID 8453). The Hardhat config forks Base mainnet for testing.
 ## Limitations
 
 - **Single-hop only** — no multi-hop routing across multiple pools
-- **No deadline parameter** — transactions have no expiry; use tight `amountOutMin` values for protection
-- **Pool awareness required** — the caller must specify the pool address (V2/V3) or pool ID (V4)
+- **Pool awareness required** — the caller must specify the pool address (V2/V3) or pool ID (V4); use `getBestRate()` for discovery
 - **WETH cannot be tokenIn or tokenOut** — use the ETH swap functions for native ETH
 - **V4 pool keys must be canonically ordered** — `currency0 < currency1`
-- **Fee receiver must accept ETH** — if a fee receiver is a contract that reverts on ETH receive, all swaps involving ETH fees will fail
+- **Fee receiver must accept ETH** — if a fee receiver is a contract that reverts on ETH receive, fee claiming will fail (swaps are unaffected)
 
 ## Documentation
 

@@ -64,12 +64,14 @@ sequenceDiagram
 
     rect rgb(255, 248, 240)
         Note over UI,Pool: Phase 2 — Execution (gas cost)
-        UI->>DEN: swapETHForToken(pool, token, amountOutMin)<br/>{value: ethAmount}
-        DEN->>DEN: Deduct fees from ETH
+        UI->>UI: deadline = now + 5 minutes
+        UI->>DEN: swapETHForToken(pool, token, amountOutMin, deadline)<br/>{value: ethAmount}
+        DEN->>DEN: Deduct fees, accumulate in contract
         DEN->>Pool: Execute swap
         Pool-->>User: Output tokens sent directly
         DEN-->>UI: Transaction receipt
     end
+    Note over DEN: Fees held in contract until<br/>claimSystemFeesETH() / claimPartnerFeesETH()
 
     UI-->>User: Swap complete!<br/>Received: 2,012 USDC
 ```
@@ -82,15 +84,14 @@ sequenceDiagram
     participant DEN
     participant WETH as WETH Contract
     participant V2 as V2 Pair Pool
-    participant SYS as System Fee Receiver
-    participant PART as Partner Fee Receiver
 
-    User->>DEN: swapETHForToken(pool, tokenOut, minOut)<br/>{value: 1 ETH}
+    User->>DEN: swapETHForToken(pool, tokenOut, minOut, deadline)<br/>{value: 1 ETH}
 
+    Note over DEN: Check deadline not expired
     Note over DEN: getFees(1 ETH, 50)<br/>systemFee = 0.0015 ETH<br/>partnerFee = 0.005 ETH<br/>remaining = 0.9935 ETH
 
-    DEN->>SYS: 0.0015 ETH
-    DEN->>PART: 0.005 ETH
+    Note over DEN: Accumulate fees (pull-based):<br/>pendingSystemFeesETH += 0.0015<br/>pendingPartnerFeesETH += 0.005
+
     DEN->>WETH: deposit{0.9935 ETH}()
     Note over DEN: DEN now holds 0.9935 WETH
 
@@ -112,15 +113,14 @@ sequenceDiagram
     participant CB as DEN Callback Handler
     participant WETH as WETH Contract
     participant V3 as V3 Pool
-    participant SYS as System Fee Receiver
-    participant PART as Partner Fee Receiver
 
-    User->>DEN: swapETHForToken(pool, tokenOut, minOut)<br/>{value: 1 ETH}
+    User->>DEN: swapETHForToken(pool, tokenOut, minOut, deadline)<br/>{value: 1 ETH}
 
+    Note over DEN: Check deadline not expired
     Note over DEN: Deduct fees, wrap remaining to WETH
 
-    DEN->>SYS: 0.0015 ETH
-    DEN->>PART: 0.005 ETH
+    Note over DEN: Accumulate fees (pull-based):<br/>pendingSystemFeesETH += 0.0015<br/>pendingPartnerFeesETH += 0.005
+
     DEN->>WETH: deposit{0.9935 ETH}()
 
     DEN->>DEN: currentSwapPool = V3 pool address
@@ -147,15 +147,13 @@ sequenceDiagram
     actor User
     participant DEN
     participant PM as V4 PoolManager
-    participant SYS as System Fee Receiver
-    participant PART as Partner Fee Receiver
 
-    User->>DEN: swapETHForTokenV4(poolId, tokenOut, minOut)<br/>{value: 1 ETH}
+    User->>DEN: swapETHForTokenV4(poolId, tokenOut, minOut, deadline)<br/>{value: 1 ETH}
 
+    Note over DEN: Check deadline not expired
     Note over DEN: Deduct fees from ETH
 
-    DEN->>SYS: 0.0015 ETH
-    DEN->>PART: 0.005 ETH
+    Note over DEN: Accumulate fees (pull-based):<br/>pendingSystemFeesETH += 0.0015<br/>pendingPartnerFeesETH += 0.005
 
     Note over DEN: Build V4SwapCallbackData struct<br/>amountSpecified = -0.9935 ETH (negative = exact input)
 
@@ -188,13 +186,12 @@ sequenceDiagram
     participant DEN
     participant Pool as V2/V3/V4 Pool
     participant WETH as WETH Contract
-    participant SYS as System Fee Receiver
-    participant PART as Partner Fee Receiver
 
     Note over User: Must approve DEN first:<br/>token.approve(DEN, amount)
 
-    User->>DEN: swapTokenForETH(pool, tokenIn, amountIn, minOut)
+    User->>DEN: swapTokenForETH(pool, tokenIn, amountIn, minOut, deadline)
 
+    Note over DEN: Check deadline not expired
     Note over DEN: NO fee deduction yet<br/>(fees taken from output)
 
     DEN->>Pool: Execute swap<br/>(user's tokens → pool → WETH to DEN)
@@ -205,11 +202,41 @@ sequenceDiagram
     DEN->>WETH: withdraw(totalWETH)
     Note over DEN: WETH → ETH
 
-    DEN->>SYS: systemFee in ETH
-    DEN->>PART: partnerFee in ETH
-    DEN->>User: remaining ETH
+    Note over DEN: Accumulate fees (pull-based):<br/>pendingSystemFeesETH += systemFee<br/>pendingPartnerFeesETH += partnerFee
+
+    DEN->>User: remaining ETH (output - fees)
 
     Note over DEN: Verify: ETH sent to user >= minOut
+```
+
+## Fee Claiming Flow
+
+```mermaid
+sequenceDiagram
+    actor Caller as Anyone (keeper, receiver, UI)
+    participant DEN
+    participant SYS as System Fee Receiver
+    participant PART as Partner Fee Receiver
+
+    Note over DEN: Fees accumulated during swaps:<br/>pendingSystemFeesETH = X<br/>pendingPartnerFeesETH = Y
+
+    Caller->>DEN: claimSystemFeesETH()
+    Note over DEN: amount = pendingSystemFeesETH<br/>pendingSystemFeesETH = 0
+    DEN->>SYS: send(amount) ETH
+
+    Caller->>DEN: claimPartnerFeesETH()
+    Note over DEN: amount = pendingPartnerFeesETH<br/>pendingPartnerFeesETH = 0
+    DEN->>PART: send(amount) ETH
+
+    Note over DEN: Token fees (from Token→Token swaps):
+
+    Caller->>DEN: claimSystemFeesToken(USDC)
+    Note over DEN: amount = pendingSystemFeesToken[USDC]<br/>pendingSystemFeesToken[USDC] = 0
+    DEN->>SYS: USDC.transfer(amount)
+
+    Caller->>DEN: claimPartnerFeesToken(USDC)
+    Note over DEN: amount = pendingPartnerFeesToken[USDC]<br/>pendingPartnerFeesToken[USDC] = 0
+    DEN->>PART: USDC.transfer(amount)
 ```
 
 ## Rate Shopping Flow
@@ -267,7 +294,8 @@ flowchart LR
     subgraph ETH_TO_TOKEN["ETH → Token"]
         direction TB
         A1[User sends ETH] --> A2[Deduct DEN fees<br/>from INPUT]
-        A2 --> A3[Swap remaining ETH]
+        A2 --> A2b[Fees accumulate in contract]
+        A2b --> A3[Swap remaining ETH]
         A3 --> A4[User receives tokens]
     end
 
@@ -275,20 +303,24 @@ flowchart LR
         direction TB
         B1[User sends tokens] --> B2[Swap full amount]
         B2 --> B3[Deduct DEN fees<br/>from OUTPUT ETH]
-        B3 --> B4[User receives ETH]
+        B3 --> B3b[Fees accumulate in contract]
+        B3b --> B4[User receives ETH]
     end
 
     subgraph TOKEN_TO_TOKEN["Token → Token"]
         direction TB
         C1[User sends tokens] --> C2[Swap full amount]
         C2 --> C3[Deduct DEN fees<br/>from OUTPUT tokens]
-        C3 --> C4[User receives tokens]
+        C3 --> C3b[Fees accumulate in contract]
+        C3b --> C4[User receives tokens]
     end
 
     style ETH_TO_TOKEN fill:#e8f5e9
     style TOKEN_TO_ETH fill:#e3f2fd
     style TOKEN_TO_TOKEN fill:#fff3e0
 ```
+
+**Note:** All fees are pull-based. They accumulate inside the DEN contract during swaps. System and partner fee receivers claim their pending fees by calling `claimSystemFeesETH()` / `claimPartnerFeesETH()` (for ETH) or `claimSystemFeesToken(token)` / `claimPartnerFeesToken(token)` (for tokens). Anyone can trigger a claim — the funds always go to the designated receiver.
 
 ## V3 Callback Security Model
 
@@ -363,11 +395,13 @@ graph TB
         U4[swapETHForTokenV4]
         U5[swapTokenForETHV4]
         U6[swapTokenForTokenV4]
-        U7["WithCustomFee variants<br/>(fee >= 1)"]
+        U7["WithCustomFee variants<br/>(fee: 0–235)"]
         U8[getBestRate]
         U9[getFees]
         U10[getUniswapVersion]
         U11[checkV2Rate / checkV3Rate / checkV4Rate]
+        U12["claimSystemFeesETH/Token<br/>(funds go to systemFeeReceiver)"]
+        U13["claimPartnerFeesETH/Token<br/>(funds go to partnerFeeReceiver)"]
     end
 
     subgraph Callback["Restricted Callbacks"]

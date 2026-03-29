@@ -146,7 +146,16 @@ const SLIPPAGE_BPS = 50; // 0.5% slippage tolerance
 const amountOutMin = estimatedOutput * BigInt(10000 - SLIPPAGE_BPS) / 10000n;
 ```
 
-### 5. Execute the Swap
+### 5. Set a Deadline
+
+All swap functions require a `deadline` parameter (Unix timestamp). The transaction reverts if `block.timestamp > deadline`.
+
+```typescript
+// Deadline 5 minutes from now
+const deadline = Math.floor(Date.now() / 1000) + 300;
+```
+
+### 6. Execute the Swap
 
 #### ETH → Token
 
@@ -156,6 +165,7 @@ const tx = await den.swapETHForToken(
   poolAddress,        // V2 or V3 pool address
   tokenAddress,       // output token
   amountOutMin,       // minimum output (slippage protection)
+  deadline,           // Unix timestamp expiry
   { value: amountIn } // ETH to swap
 );
 
@@ -164,6 +174,7 @@ const tx = await den.swapETHForTokenV4(
   v4PoolId,           // bytes32 pool identifier
   tokenAddress,       // output token
   amountOutMin,
+  deadline,
   { value: amountIn }
 );
 ```
@@ -182,7 +193,8 @@ const tx = await den.swapTokenForETH(
   poolAddress,        // V2 or V3 pool address
   tokenAddress,       // input token
   amountIn,           // amount of tokens to swap
-  amountOutMin        // minimum ETH output
+  amountOutMin,       // minimum ETH output
+  deadline            // Unix timestamp expiry
 );
 
 // V4 variant
@@ -190,7 +202,8 @@ const tx = await den.swapTokenForETHV4(
   v4PoolId,
   tokenAddress,
   amountIn,
-  amountOutMin
+  amountOutMin,
+  deadline
 );
 ```
 
@@ -206,7 +219,8 @@ const tx = await den.swapTokenForToken(
   tokenInAddress,
   tokenOutAddress,
   amountIn,
-  amountOutMin
+  amountOutMin,
+  deadline
 );
 
 // V4 variant
@@ -215,7 +229,8 @@ const tx = await den.swapTokenForTokenV4(
   tokenInAddress,
   tokenOutAddress,
   amountIn,
-  amountOutMin
+  amountOutMin,
+  deadline
 );
 ```
 
@@ -242,9 +257,13 @@ The contract rejects WETH in user-facing parameters. WETH is used internally onl
 { currency0: "0x833...913", currency1: "0x000...000", ... }
 ```
 
-### Minimum Fee Enforcement
+### Fee Enforcement
 
-The `WithCustomFee` variants require `partnerFeeNumerator >= 1`. Passing 0 reverts.
+The system fee (0.15%) is always collected on every swap, regardless of how the swap is initiated.
+
+The `WithCustomFee` variants accept any `partnerFeeNumerator` from 0 to 235. Passing 0 is valid and results in no partner fee — only the system fee is deducted. This is by design: partners can offer fee-free swaps to premium customers, and users who interact with the contract directly (bypassing the partner app) may choose to skip the partner fee. The system fee is still collected in all cases.
+
+The standard (non-custom) swap functions always use the contract's stored `partnerFeeNumerator` (default 0.50%, configurable by the partner between 0.01% and 2.35%).
 
 ### Estimates Are Approximate
 
@@ -284,8 +303,9 @@ den.on("SwapV4", (caller, poolId, tokenIn, tokenOut) => {
 The contract does not return the output amount in the transaction receipt. Measure it by comparing token balances before and after:
 
 ```typescript
+const deadline = Math.floor(Date.now() / 1000) + 300;
 const balanceBefore = await token.balanceOf(userAddress);
-const tx = await den.swapETHForToken(pool, token, amountOutMin, { value: amountIn });
+const tx = await den.swapETHForToken(pool, token, amountOutMin, deadline, { value: amountIn });
 await tx.wait();
 const balanceAfter = await token.balanceOf(userAddress);
 const received = balanceAfter - balanceBefore;
@@ -298,11 +318,15 @@ const received = balanceAfter - balanceBefore;
 The contract uses custom errors. Decode them in the frontend:
 
 ```typescript
+const deadline = Math.floor(Date.now() / 1000) + 300;
 try {
-  await den.swapETHForToken(pool, token, amountOutMin, { value: amountIn });
+  await den.swapETHForToken(pool, token, amountOutMin, deadline, { value: amountIn });
 } catch (error) {
   const decoded = den.interface.parseError(error.data);
   switch (decoded?.name) {
+    case "DeadlineExpired":
+      alert("Transaction expired. Please try again.");
+      break;
     case "ReceivedLessThanMinimum":
       alert("Price moved too much. Try increasing slippage tolerance.");
       break;
@@ -331,6 +355,7 @@ try {
 
 | Error | Cause | User Action |
 |---|---|---|
+| `DeadlineExpired` | Transaction submitted after the deadline | Retry with a new deadline |
 | `ReceivedLessThanMinimum` | Price moved beyond slippage tolerance | Increase slippage or retry |
 | `ZeroValueForMsgValue` | No ETH sent with ETH→Token swap | Include ETH value |
 | `ZeroValueForAmountOutMin` | amountOutMin is 0 | Set a minimum output |
@@ -344,7 +369,7 @@ try {
 | `UnsupportedDEX` | Pool address is not a recognized V2 or V3 pool | Verify pool address |
 | `V4PoolManagerNotSet` | V4 PM not configured | Admin must call setV4PoolManager |
 | `V4PoolNotRegistered` | V4 pool ID not in the supported list | Admin must call addV4Pool |
-| `PartnerFeeTooHigh` | Custom fee is 0 or > 235 | Use fee between 1 and 235 |
+| `PartnerFeeTooHigh` | Custom fee > 235 | Use fee between 0 and 235 |
 
 ---
 
@@ -429,14 +454,15 @@ async function swapETHForToken(
   console.log(`Minimum output: ${ethers.formatUnits(amountOutMin, decimals)} ${symbol}`);
   console.log(`Route: Uniswap V${versionUsed}`);
 
-  // 5. Execute
+  // 5. Execute (with 5-minute deadline)
+  const deadline = Math.floor(Date.now() / 1000) + 300;
   const balanceBefore = await token.balanceOf(await signer.getAddress());
 
   let tx;
   if (versionUsed === 4) {
-    tx = await den.swapETHForTokenV4(poolId!, tokenOut, amountOutMin, { value: amountIn });
+    tx = await den.swapETHForTokenV4(poolId!, tokenOut, amountOutMin, deadline, { value: amountIn });
   } else {
-    tx = await den.swapETHForToken(poolAddress!, tokenOut, amountOutMin, { value: amountIn });
+    tx = await den.swapETHForToken(poolAddress!, tokenOut, amountOutMin, deadline, { value: amountIn });
   }
 
   const receipt = await tx.wait();
@@ -452,10 +478,109 @@ async function swapETHForToken(
 
 ---
 
+## Claiming Fees (Partner & System)
+
+Fees are **not sent immediately** during swaps. Instead, they accumulate inside the DEN contract and must be claimed by calling the appropriate function. Anyone can trigger a claim — the funds always go to the designated receiver, not the caller.
+
+### Checking Pending Fees
+
+```typescript
+// ETH fees
+const pendingSystemETH = await den.pendingSystemFeesETH();
+const pendingPartnerETH = await den.pendingPartnerFeesETH();
+
+// Token fees (e.g., USDC from Token→Token swaps)
+const usdcAddress = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const pendingSystemUSDC = await den.pendingSystemFeesToken(usdcAddress);
+const pendingPartnerUSDC = await den.pendingPartnerFeesToken(usdcAddress);
+```
+
+### Claiming ETH Fees
+
+```typescript
+// Claim system fees (ETH sent to systemFeeReceiver)
+if (pendingSystemETH > 0n) {
+  const tx = await den.claimSystemFeesETH();
+  await tx.wait();
+}
+
+// Claim partner fees (ETH sent to partnerFeeReceiver)
+if (pendingPartnerETH > 0n) {
+  const tx = await den.claimPartnerFeesETH();
+  await tx.wait();
+}
+```
+
+### Claiming Token Fees
+
+Token fees accumulate from **Token → Token** swaps where the output token is not WETH.
+
+```typescript
+// Claim system token fees (tokens sent to systemFeeReceiver)
+if (pendingSystemUSDC > 0n) {
+  const tx = await den.claimSystemFeesToken(usdcAddress);
+  await tx.wait();
+}
+
+// Claim partner token fees (tokens sent to partnerFeeReceiver)
+if (pendingPartnerUSDC > 0n) {
+  const tx = await den.claimPartnerFeesToken(usdcAddress);
+  await tx.wait();
+}
+```
+
+### When to Claim
+
+- Claims can be triggered at any time by any address (a keeper bot, the receiver themselves, or a UI button).
+- The ETH/tokens always go to the designated `systemFeeReceiver` or `partnerFeeReceiver`, regardless of who calls.
+- If there are no pending fees, the claim reverts with `NoFeesToClaim`.
+- Partners should monitor `pendingPartnerFeesETH` and claim periodically (e.g., daily or when a threshold is met).
+- For Token→Token swaps, partners should track which output tokens have accumulated fees and claim each one separately.
+
+### Fee Receiver Requirements
+
+- The `systemFeeReceiver` and `partnerFeeReceiver` addresses **must be able to accept ETH** (either an EOA or a contract with a `receive()` function). If a fee receiver contract reverts on ETH receipt, the claim transaction will fail, but **swaps are never blocked** — fees simply continue to accumulate until the receiver issue is resolved.
+
+---
+
+## Partner Administration
+
+Partners manage their own fee configuration and receiver address through the `partner` role.
+
+### Changing the Partner Fee Rate
+
+```typescript
+// Only callable by the current partner address
+// Valid range: 1–235 (0.01%–2.35%)
+const tx = await den.setPartnerFeeNumerator(100); // 1.00%
+await tx.wait();
+```
+
+### Changing the Partner Fee Receiver
+
+```typescript
+// Only callable by the current partner address
+const tx = await den.setPartnerFeeReceiver(newReceiverAddress);
+await tx.wait();
+```
+
+### Transferring Partnership
+
+```typescript
+// Only callable by the current partner address
+// This transfers ALL partner privileges (fee management, receiver, claiming destination)
+const tx = await den.transferPartnership(newPartnerAddress);
+await tx.wait();
+```
+
+---
+
 ## Known Limitations
 
-1. **No deadline parameter**: Transactions have no expiry. Use tight `amountOutMin` values.
+1. **Single-hop only**: The DEN does not support multi-hop routing. Both tokens must exist in the same pool.
 2. **V4 swaps require Cancun EVM**: The V4 PoolManager uses transient storage. Only works on chains with Cancun support (Base mainnet has this).
 3. **Estimates are spot-price only**: Large trades will experience slippage beyond the estimate. The estimate does not simulate the full AMM curve.
 4. **Rate shopping checks one V3 fee tier**: `getBestRate` takes a single `feeTier` parameter. To check multiple V3 fee tiers (500, 3000, 10000), call it multiple times or check individual pools.
-5. **Token → Token requires pool with direct pair**: The DEN does not support multi-hop routing. Both tokens must exist in the same pool.
+5. **Token → Token requires pool with direct pair**: Both tokens must exist in the same pool.
+6. **Pool awareness required**: The caller must specify the pool address (V2/V3) or pool ID (V4). Use `getBestRate()` or `DENEstimator.discoverPools()` to find available pools.
+7. **WETH cannot be tokenIn or tokenOut**: Use the ETH swap functions (`swapETHForToken` / `swapTokenForETH`) for native ETH.

@@ -30,7 +30,8 @@ contract DENEstimator {
 
     /**
      * @dev Estimates output for a V2 or V3 pool swap.
-     *      Restricted to EOA callers to prevent on-chain manipulation.
+     *      This is a view function — callable by any address (EOA or contract).
+     *      Estimates are spot-price only and do not account for price impact or pending txs.
      */
     function estimateAmountOut(
         address _pool,

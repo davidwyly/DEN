@@ -23,7 +23,7 @@ interface IDecentralizedExchangeNetwork {
         address _tokenOut,
         uint256 _amountOutMin,
         uint256 _deadline
-    ) external payable returns (uint256 amountOut);
+    ) external payable;
 
     function swapETHForTokenWithCustomFee(
         address _pool,
@@ -31,7 +31,7 @@ interface IDecentralizedExchangeNetwork {
         uint256 _amountOutMin,
         uint8 _customPartnerFeeNum,
         uint256 _deadline
-    ) external payable returns (uint256 amountOut);
+    ) external payable;
 
     function swapTokenForETH(
         address _pool,
@@ -39,7 +39,7 @@ interface IDecentralizedExchangeNetwork {
         uint256 _amountIn,
         uint256 _amountOutMin,
         uint256 _deadline
-    ) external returns (uint256 amountOut);
+    ) external;
 
     function swapTokenForETHWithCustomFee(
         address _pool,
@@ -48,7 +48,7 @@ interface IDecentralizedExchangeNetwork {
         uint256 _amountOutMin,
         uint8 _customPartnerFeeNum,
         uint256 _deadline
-    ) external returns (uint256 amountOut);
+    ) external;
 
     function swapTokenForToken(
         address _pool,
@@ -57,7 +57,7 @@ interface IDecentralizedExchangeNetwork {
         uint256 _amountIn,
         uint256 _amountOutMin,
         uint256 _deadline
-    ) external returns (uint256 amountOut);
+    ) external;
 
     function swapTokenForTokenWithCustomFee(
         address _pool,
@@ -67,7 +67,7 @@ interface IDecentralizedExchangeNetwork {
         uint256 _amountOutMin,
         uint8 _customPartnerFeeNum,
         uint256 _deadline
-    ) external returns (uint256 amountOut);
+    ) external;
 
     // V4 swaps
     function swapETHForTokenV4(
@@ -134,6 +134,16 @@ interface IDecentralizedExchangeNetwork {
     function setV4PoolManager(address _v4PoolManager) external;
     function addV4Pool(V4PoolKey calldata _poolKey) external;
     function removeV4Pool(uint256 _index) external;
+
+    // Fee claiming (permissionless — funds always go to the designated receiver)
+    function pendingSystemFeesETH() external view returns (uint256);
+    function pendingPartnerFeesETH() external view returns (uint256);
+    function pendingSystemFeesToken(address _token) external view returns (uint256);
+    function pendingPartnerFeesToken(address _token) external view returns (uint256);
+    function claimSystemFeesETH() external;
+    function claimPartnerFeesETH() external;
+    function claimSystemFeesToken(address _token) external;
+    function claimPartnerFeesToken(address _token) external;
 
     // Rate shopping
     function checkV4Rate(

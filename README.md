@@ -333,6 +333,319 @@ const UNISWAP = {
 
 ---
 
+## Swap Flow Diagrams
+
+### System Architecture
+
+```mermaid
+graph TB
+    subgraph User Layer
+        UI[Frontend / Mobile App]
+    end
+
+    subgraph DEN Contracts
+        HELP[DENHelper]
+        DEN[DecentralizedExchangeNetwork]
+        EST[DENEstimator]
+        LIB[V4SwapLib]
+    end
+
+    subgraph Uniswap Pools
+        V2[V2 Pair Pools]
+        V3[V3 Concentrated Pools]
+        V4[V4 PoolManager Singleton]
+    end
+
+    UI -->|"swapETHForBestToken()"| HELP
+    HELP -->|"getBestRateAllTiers()"| EST
+    HELP -->|"swapETHForToken()"| DEN
+    UI -.->|"estimateSwap()"| EST
+    EST -.->|delegatecall| LIB
+    DEN -.->|delegatecall| LIB
+    DEN -->|swap| V2
+    DEN -->|swap + callback| V3
+    DEN -->|unlock + callback| V4
+```
+
+### Frontend Swap Flow (High Level)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Frontend
+    participant EST as DENEstimator
+    participant HELP as DENHelper
+    participant DEN as DEN Contract
+    participant Pool as Uniswap Pool
+
+    User->>UI: Enter swap details (token, amount)
+
+    rect rgb(240, 248, 255)
+        Note over UI,EST: Phase 1 — Price Discovery (view calls, no gas)
+        UI->>EST: getBestRateAllTiers(WETH, token, amount)
+        EST-->>UI: routerUsed, version, bestOutput, v4PoolIndex, feeTier
+        UI->>UI: amountOutMin = bestOutput * (1 - slippage)
+    end
+
+    UI-->>User: Show quote: ~2,015 USDC, min: 2,005 USDC
+
+    User->>UI: Confirm swap
+
+    rect rgb(255, 248, 240)
+        Note over UI,Pool: Phase 2 — Execution (gas cost)
+        UI->>HELP: swapETHForBestToken(token, amountOutMin, deadline){value}
+        HELP->>EST: getBestRateAllTiers (on-chain re-check)
+        HELP->>DEN: swapETHForToken(pool, token, amountOutMin, deadline){value}
+        DEN->>DEN: Deduct fees, accumulate in contract
+        DEN->>Pool: Execute swap
+        Pool-->>HELP: Output tokens
+        HELP-->>User: Forward tokens
+    end
+
+    Note over DEN: Fees held until claimSystemFeesETH() / claimPartnerFeesETH()
+```
+
+### ETH -> Token (V2 Path)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant DEN
+    participant WETH as WETH Contract
+    participant V2 as V2 Pair Pool
+
+    User->>DEN: swapETHForToken(pool, tokenOut, minOut, deadline){value: 1 ETH}
+
+    Note over DEN: Check deadline not expired
+    Note over DEN: getFees(1 ETH, 50)<br/>systemFee = 0.0015 ETH<br/>partnerFee = 0.005 ETH<br/>remaining = 0.9935 ETH
+    Note over DEN: Accumulate fees (pull-based):<br/>pendingSystemFeesETH += 0.0015<br/>pendingPartnerFeesETH += 0.005
+
+    DEN->>WETH: deposit{0.9935 ETH}()
+    DEN->>V2: transfer 0.9935 WETH to pair
+    DEN->>V2: getReserves()
+    Note over DEN: Calculate output via constant product (997/1000)
+    DEN->>V2: swap(amount0Out, amount1Out, user, "")
+    V2-->>User: USDC sent directly to user
+
+    Note over DEN: Verify: USDC received >= minOut
+```
+
+### ETH -> Token (V3 Path)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant DEN
+    participant CB as DEN Callback Handler
+    participant WETH as WETH Contract
+    participant V3 as V3 Pool
+
+    User->>DEN: swapETHForToken(pool, tokenOut, minOut, deadline){value: 1 ETH}
+
+    Note over DEN: Check deadline, deduct fees, wrap remaining to WETH
+    Note over DEN: Accumulate fees (pull-based)
+
+    DEN->>WETH: deposit{0.9935 ETH}()
+    DEN->>DEN: currentSwapPool = V3 pool address
+    DEN->>V3: pool.swap(user, zeroForOne, amountIn, priceLimit, callbackData)
+
+    rect rgb(255, 245, 238)
+        Note over V3,CB: V3 Callback (pool calls DEN)
+        V3->>CB: fallback(amount0Delta, amount1Delta, data)
+        Note over CB: Verify msg.sender == currentSwapPool
+        CB->>CB: Decode (tokenIn, payer) from data
+        CB->>WETH: transfer WETH from DEN to pool
+    end
+
+    V3-->>User: USDC sent directly to user
+    DEN->>DEN: currentSwapPool = address(1)
+```
+
+### ETH -> Token (V4 Path)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant DEN
+    participant PM as V4 PoolManager
+
+    User->>DEN: swapETHForTokenV4(poolId, tokenOut, minOut, deadline){value: 1 ETH}
+
+    Note over DEN: Check deadline, deduct fees
+    Note over DEN: Accumulate fees (pull-based)
+
+    DEN->>DEN: v4SwapInProgress = true
+    DEN->>PM: unlock(encodedCallbackData)
+
+    rect rgb(245, 255, 245)
+        Note over PM,DEN: V4 Unlock Callback
+        PM->>DEN: unlockCallback(data)
+        Note over DEN: Verify msg.sender == PM, v4SwapInProgress == true
+        DEN->>PM: swap(poolKey, params, "")
+        PM-->>DEN: BalanceDelta (packed int256)
+        DEN->>PM: settle{value: |amount0|}()
+        DEN->>PM: take(USDC, user, amount1)
+        PM-->>User: USDC sent to user
+    end
+
+    DEN->>DEN: v4SwapInProgress = false
+```
+
+### Token -> ETH (All Versions)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant DEN
+    participant Pool as V2/V3/V4 Pool
+    participant WETH as WETH Contract
+
+    Note over User: Must approve DEN first: token.approve(DEN, amount)
+
+    User->>DEN: swapTokenForETH(pool, tokenIn, amountIn, minOut, deadline)
+
+    Note over DEN: Check deadline, NO fee deduction yet (fees from output)
+
+    DEN->>Pool: Execute swap (user's tokens -> pool -> WETH to DEN)
+    Pool-->>DEN: WETH received
+
+    Note over DEN: getFees(wethReceived, 50)
+    DEN->>WETH: withdraw(totalWETH)
+    Note over DEN: Accumulate fees (pull-based)
+    DEN->>User: remaining ETH (output - fees)
+
+    Note over DEN: Verify: ETH sent to user >= minOut
+```
+
+### Fee Claiming Flow
+
+```mermaid
+sequenceDiagram
+    actor Caller as Anyone (keeper, receiver, UI)
+    participant DEN
+    participant SYS as System Fee Receiver
+    participant PART as Partner Fee Receiver
+
+    Note over DEN: Fees accumulated during swaps
+
+    Caller->>DEN: claimSystemFeesETH()
+    Note over DEN: pendingSystemFeesETH = 0
+    DEN->>SYS: send(amount) ETH
+
+    Caller->>DEN: claimPartnerFeesETH()
+    Note over DEN: pendingPartnerFeesETH = 0
+    DEN->>PART: send(amount) ETH
+
+    Caller->>DEN: claimSystemFeesToken(USDC)
+    Note over DEN: pendingSystemFeesToken[USDC] = 0
+    DEN->>SYS: USDC.transfer(amount)
+
+    Caller->>DEN: claimPartnerFeesToken(USDC)
+    Note over DEN: pendingPartnerFeesToken[USDC] = 0
+    DEN->>PART: USDC.transfer(amount)
+```
+
+### Fee Deduction Timing
+
+```mermaid
+flowchart LR
+    subgraph ETH_TO_TOKEN["ETH -> Token"]
+        direction TB
+        A1[User sends ETH] --> A2[Deduct DEN fees from INPUT]
+        A2 --> A2b[Fees accumulate in contract]
+        A2b --> A3[Swap remaining ETH]
+        A3 --> A4[User receives tokens]
+    end
+
+    subgraph TOKEN_TO_ETH["Token -> ETH"]
+        direction TB
+        B1[User sends tokens] --> B2[Swap full amount]
+        B2 --> B3[Deduct DEN fees from OUTPUT ETH]
+        B3 --> B3b[Fees accumulate in contract]
+        B3b --> B4[User receives ETH]
+    end
+
+    subgraph TOKEN_TO_TOKEN["Token -> Token"]
+        direction TB
+        C1[User sends tokens] --> C2[Swap full amount]
+        C2 --> C3[Deduct DEN fees from OUTPUT tokens]
+        C3 --> C3b[Fees accumulate in contract]
+        C3b --> C4[User receives tokens]
+    end
+
+    style ETH_TO_TOKEN fill:#e8f5e9
+    style TOKEN_TO_ETH fill:#e3f2fd
+    style TOKEN_TO_TOKEN fill:#fff3e0
+```
+
+### V3 Callback Security
+
+```mermaid
+flowchart TD
+    A[V3 Pool calls DEN fallback] --> B{msg.data >= 68 bytes?}
+    B -->|No| C[REVERT: InsufficientCallbackData]
+    B -->|Yes| D[Decode: amount0Delta, amount1Delta, data]
+    D --> E{msg.sender == currentSwapPool?}
+    E -->|No| F[REVERT: UnauthorizedCallback]
+    E -->|Yes| G{amount0Delta > 0 OR amount1Delta > 0?}
+    G -->|No| H[REVERT: NoTokensReceived]
+    G -->|Yes| I[Decode inner data: tokenIn, payer]
+    I --> J{payer == DEN contract?}
+    J -->|Yes| K[Transfer WETH from DEN to pool]
+    J -->|No| L[TransferFrom user to pool]
+    K --> M[Callback complete]
+    L --> M
+
+    style C fill:#ffcdd2
+    style F fill:#ffcdd2
+    style H fill:#ffcdd2
+    style M fill:#c8e6c9
+```
+
+### V4 Callback Security
+
+```mermaid
+flowchart TD
+    A[PM calls DEN.unlockCallback] --> B{msg.sender == v4PoolManager?}
+    B -->|No| C[REVERT: UnauthorizedUnlockCallback]
+    B -->|Yes| D{v4SwapInProgress == true?}
+    D -->|No| E[REVERT: UnauthorizedUnlockCallback]
+    D -->|Yes| F[Decode V4SwapCallbackData]
+    F --> G[PM.swap - get BalanceDelta]
+    G --> H{currencyIn == address 0?}
+    H -->|Yes: Native ETH| I[PM.settle with ETH value]
+    H -->|No: ERC20| J[PM.sync, transfer, PM.settle]
+    I --> K[PM.take output to recipient]
+    J --> K
+    K --> L[Return encoded amountOut]
+
+    style C fill:#ffcdd2
+    style E fill:#ffcdd2
+    style L fill:#c8e6c9
+```
+
+### Deployment Order
+
+```mermaid
+flowchart TD
+    A[1. Deploy V4SwapLib] --> B[2. Deploy DEN linked to V4SwapLib]
+    A --> C[3. Deploy DENEstimator linked to V4SwapLib]
+    B --> D[4. Deploy DENHelper references DEN + Estimator]
+    B --> E[5. Configure DEN]
+    E --> F[addV2Router]
+    E --> G[addV3Router]
+    E --> H[setV4PoolManager]
+    H --> I[addV4Pool for each pair]
+
+    style A fill:#e3f2fd
+    style B fill:#e8f5e9
+    style C fill:#e8f5e9
+    style D fill:#e8f5e9
+    style E fill:#fff3e0
+```
+
+---
+
 ## Testing
 
 ```bash

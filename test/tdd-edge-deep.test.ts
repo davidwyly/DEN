@@ -339,7 +339,7 @@ describe("Deep Edge Cases", function () {
             const f = await ethers.getContractFactory("DENEstimator", {
                 libraries: { V4SwapLib: v4SwapLibAddress },
             });
-            estimator = await f.deploy(WETH_ADDR, V4_PM) as DENEstimator;
+            estimator = await f.deploy(await den.getAddress(), WETH_ADDR, V4_PM) as DENEstimator;
         });
 
         it("estimateAmountOut with pool=tokenIn should revert", async function () {

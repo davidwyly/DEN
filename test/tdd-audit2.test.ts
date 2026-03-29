@@ -117,7 +117,7 @@ describe("Audit Round 2 — TDD Fixes", function () {
             const estimatorFactory = await ethers.getContractFactory("DENEstimator", {
                 libraries: { V4SwapLib: v4SwapLibAddress },
             });
-            const estimator = await estimatorFactory.deploy(WETH_ADDR, V4_PM) as DENEstimator;
+            const estimator = await estimatorFactory.deploy(await den.getAddress(), WETH_ADDR, V4_PM) as DENEstimator;
             await estimator.waitForDeployment();
 
             const swapAmount = ethers.parseEther("1");

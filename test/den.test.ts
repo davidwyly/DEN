@@ -74,11 +74,11 @@ async function deployDEN(
     )) as DecentralizedExchangeNetwork;
 }
 
-async function deployEstimator(): Promise<DENEstimator> {
+async function deployEstimator(denAddress: string): Promise<DENEstimator> {
     const f = await ethers.getContractFactory("DENEstimator", {
         libraries: { V4SwapLib: v4SwapLibAddress },
     });
-    return (await f.deploy(WETH_ADDR, V4_PM)) as DENEstimator;
+    return (await f.deploy(denAddress, WETH_ADDR, V4_PM)) as DENEstimator;
 }
 
 describe("Decentralized Exchange Network", function () {
@@ -103,7 +103,7 @@ describe("Decentralized Exchange Network", function () {
         }
 
         den = await deployDEN(deployer, partner, sysFR, partFR, PARTNER_FEE);
-        estimator = await deployEstimator();
+        estimator = await deployEstimator(await den.getAddress());
         usdc = await ethers.getContractAt(erc20Abi, USDC);
     });
 

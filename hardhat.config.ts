@@ -9,20 +9,33 @@ const config: HardhatUserConfig = {
   solidity: {
     version: "0.8.28",
     settings: {
-      //viaIR: true,
+      evmVersion: "cancun",
       optimizer: {
         enabled: true,
-        runs: 200,
+        runs: 10,
       },
     },
   },
   defaultNetwork: "hardhat",
   networks: {
     hardhat: {
-      chainId: 84532,
-      allowUnlimitedContractSize: false,
+      chainId: 31337,
+      allowUnlimitedContractSize: true,
+      hardfork: "cancun",
       forking: {
         url: "https://mainnet.base.org",
+        blockNumber: 28000000,
+      },
+      chains: {
+        8453: {
+          hardforkHistory: {
+            berlin: 0,
+            london: 0,
+            merge: 0,
+            shanghai: 0,
+            cancun: 0,
+          },
+        },
       },
     },
     base: {
@@ -32,8 +45,8 @@ const config: HardhatUserConfig = {
     },
     sepolia: {
       //Base Testnet
-      chainId: 80002,
-      url: "	https://sepolia.base.org",
+      chainId: 84532,
+      url: "https://sepolia.base.org",
       accounts: [process.env.PRIVATE_KEY as string],
     },
   },
@@ -49,7 +62,7 @@ const config: HardhatUserConfig = {
     artifacts: "./artifacts",
   },
   mocha: {
-    timeout: 40000,
+    timeout: 120000,
   },
 };
 

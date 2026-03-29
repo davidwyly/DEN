@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 // OpenZeppelin
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // Uniswap v2
@@ -15,22 +14,32 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 // Uniswap v3
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
-
-import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 
-import "./IWETH.sol";
+// Uniswap v4
+import "./interfaces/IV4PoolManager.sol";
 
-import "./IERC20Decimals.sol";
+import "./IWETH.sol";
 
 
 /**
 * @dev Abstract contract for handling callbacks from Uniswap-based V3 pools
+*      and V4 PoolManager unlock callbacks.
 */
 abstract contract DexCallbackHandler {
     using SafeERC20 for IERC20;
 
-    /** 
+    error InsufficientCallbackData();
+    error UnauthorizedCallback();
+    error NoTokensReceived();
+    error MissingInnerCallbackData();
+    error InvalidCallbackTokenIn();
+    error InvalidCallbackPayer();
+    error ContractInsufficientBalance();
+    error PayerInsufficientBalance();
+    error PayerInsufficientAllowance();
+
+    /**
     * @dev Wrapped native coins reference:
     *
     * 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 (Wrapped ETH)
@@ -44,40 +53,42 @@ abstract contract DexCallbackHandler {
     */
     address public WETH; // chain-specific WETH address
 
-    address internal currentSwapPool; // Address of the pool currently mid-swap
+    address internal currentSwapPool; // Address of the pool currently mid-swap (V3)
+
+    address public v4PoolManager; // Uniswap V4 PoolManager singleton address
 
     fallback() external payable {
         // If there is no data or not enough data, revert early.
-        // Each V3-like callback typically has >=68 bytes: 
+        // Each V3-like callback typically has >=68 bytes:
         // 4-byte selector + (int256 + int256 + bytes offset).
         if (msg.data.length < 68) {
-            revert("Not enough data for a V3 callback");
+            revert InsufficientCallbackData();
         }
 
         // 1. Decode the arguments (skipping the first 4 bytes which is the function selector).
         (int256 amount0Delta, int256 amount1Delta, bytes memory data) = abi.decode(
-            msg.data[4:], 
+            msg.data[4:],
             (int256, int256, bytes)
         );
 
         // 2. Enforce your checks:
         if (msg.sender != currentSwapPool) {
-            revert("Unauthorized callback");
+            revert UnauthorizedCallback();
         }
         if (amount0Delta <= 0 && amount1Delta <= 0) {
-            revert("No tokens received");
+            revert NoTokensReceived();
         }
 
         // 3. Decode your custom `_data` – typically `(tokenIn, payer)`.
         if (data.length < 64) {
-            revert("Missing inner callback data");
+            revert MissingInnerCallbackData();
         }
         (address tokenIn, address payer) = abi.decode(data, (address, address));
         if (tokenIn == address(0)) {
-            revert("Invalid tokenIn");
+            revert InvalidCallbackTokenIn();
         }
         if (payer == address(0)) {
-            revert("Invalid payer");
+            revert InvalidCallbackPayer();
         }
 
         // 4. Figure out how many tokens we owe the pool:
@@ -100,18 +111,18 @@ abstract contract DexCallbackHandler {
         if (_payer == address(this)) {
             // Load WETH into memory to reduce extra SLOAD
             address _WETH = WETH;
-            
+
             // Special handling for WETH: if we have enough raw ETH sitting in the contract,
             // convert it to WETH before transferring
             if (_tokenIn == _WETH && address(this).balance >= _amountToPay) {
                 // Deposit raw ETH into WETH
                 IWETH(_WETH).deposit{value: _amountToPay}();
             }
-            
+
             // Verify that this contract has enough of _tokenIn after potentially wrapping
             uint256 balance = IERC20(_tokenIn).balanceOf(address(this));
             if (balance < _amountToPay) {
-                revert("Contract has insufficient token balance");
+                revert ContractInsufficientBalance();
             }
 
             // Transfer the tokens from this contract to the recipient (the pool)
@@ -123,13 +134,13 @@ abstract contract DexCallbackHandler {
             // Check that the payer has enough tokens
             uint256 payerBalance = IERC20(_tokenIn).balanceOf(_payer);
             if (payerBalance < _amountToPay) {
-                revert("Payer has insufficient token balance");
+                revert PayerInsufficientBalance();
             }
 
             // Check that the payer has approved this contract to spend the required amount
             uint256 allowed = IERC20(_tokenIn).allowance(_payer, address(this));
             if (allowed < _amountToPay) {
-                revert("Payer has insufficient token allowance");
+                revert PayerInsufficientAllowance();
             }
 
             // Transfer the tokens from payer to the recipient (the pool)

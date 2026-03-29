@@ -380,19 +380,16 @@ sequenceDiagram
 
     User->>UI: Enter swap details (token, amount)
 
-    rect rgb(240, 248, 255)
-        Note over UI,EST: Phase 1 — Price Discovery (view calls, no gas)
+    Note over UI,EST: Phase 1 — Price Discovery (view calls, no gas)
         UI->>EST: getBestRateAllTiers(WETH, token, amount)
         EST-->>UI: routerUsed, version, bestOutput, v4PoolIndex, feeTier
         UI->>UI: amountOutMin = bestOutput * (1 - slippage)
-    end
 
     UI-->>User: Show quote: ~2,015 USDC, min: 2,005 USDC
 
     User->>UI: Confirm swap
 
-    rect rgb(255, 248, 240)
-        Note over UI,Pool: Phase 2 — Execution (gas cost)
+    Note over UI,Pool: Phase 2 — Execution (gas cost)
         UI->>HELP: swapETHForBestToken(token, amountOutMin, deadline){value}
         HELP->>EST: getBestRateAllTiers (on-chain re-check)
         HELP->>DEN: swapETHForToken(pool, token, amountOutMin, deadline){value}
@@ -400,7 +397,6 @@ sequenceDiagram
         DEN->>Pool: Execute swap
         Pool-->>HELP: Output tokens
         HELP-->>User: Forward tokens
-    end
 
     Note over DEN: Fees held until claimSystemFeesETH() / claimPartnerFeesETH()
 ```
@@ -449,13 +445,11 @@ sequenceDiagram
     DEN->>DEN: currentSwapPool = V3 pool address
     DEN->>V3: pool.swap(user, zeroForOne, amountIn, priceLimit, callbackData)
 
-    rect rgb(255, 245, 238)
-        Note over V3,CB: V3 Callback (pool calls DEN)
+    Note over V3,CB: V3 Callback (pool calls DEN)
         V3->>CB: fallback(amount0Delta, amount1Delta, data)
         Note over CB: Verify msg.sender == currentSwapPool
         CB->>CB: Decode (tokenIn, payer) from data
         CB->>WETH: transfer WETH from DEN to pool
-    end
 
     V3-->>User: USDC sent directly to user
     DEN->>DEN: currentSwapPool = address(1)
@@ -477,8 +471,7 @@ sequenceDiagram
     DEN->>DEN: v4SwapInProgress = true
     DEN->>PM: unlock(encodedCallbackData)
 
-    rect rgb(245, 255, 245)
-        Note over PM,DEN: V4 Unlock Callback
+    Note over PM,DEN: V4 Unlock Callback
         PM->>DEN: unlockCallback(data)
         Note over DEN: Verify msg.sender == PM, v4SwapInProgress == true
         DEN->>PM: swap(poolKey, params, "")
@@ -486,7 +479,6 @@ sequenceDiagram
         DEN->>PM: settle{value: |amount0|}()
         DEN->>PM: take(USDC, user, amount1)
         PM-->>User: USDC sent to user
-    end
 
     DEN->>DEN: v4SwapInProgress = false
 ```
@@ -572,10 +564,6 @@ flowchart LR
         C3 --> C3b[Fees accumulate in contract]
         C3b --> C4[User receives tokens]
     end
-
-    style ETH_TO_TOKEN fill:#e8f5e9
-    style TOKEN_TO_ETH fill:#e3f2fd
-    style TOKEN_TO_TOKEN fill:#fff3e0
 ```
 
 ### V3 Callback Security
@@ -595,11 +583,6 @@ flowchart TD
     J -->|No| L[TransferFrom user to pool]
     K --> M[Callback complete]
     L --> M
-
-    style C fill:#ffcdd2
-    style F fill:#ffcdd2
-    style H fill:#ffcdd2
-    style M fill:#c8e6c9
 ```
 
 ### V4 Callback Security
@@ -618,10 +601,6 @@ flowchart TD
     I --> K[PM.take output to recipient]
     J --> K
     K --> L[Return encoded amountOut]
-
-    style C fill:#ffcdd2
-    style E fill:#ffcdd2
-    style L fill:#c8e6c9
 ```
 
 ### Deployment Order
@@ -636,12 +615,6 @@ flowchart TD
     E --> G[addV3Router]
     E --> H[setV4PoolManager]
     H --> I[addV4Pool for each pair]
-
-    style A fill:#e3f2fd
-    style B fill:#e8f5e9
-    style C fill:#e8f5e9
-    style D fill:#e8f5e9
-    style E fill:#fff3e0
 ```
 
 ---

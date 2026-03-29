@@ -3,7 +3,11 @@
     "version": "2.0.0",
     "scripts": {
         "compile": "hardhat compile",
-        "test": "hardhat test"
+        "test": "hardhat test",
+        "deploy:base": "hardhat run scripts/deploy.ts --network base",
+        "deploy:testnet": "hardhat run scripts/deploy.ts --network sepolia",
+        "add-v4-pool:base": "hardhat run scripts/add-v4-pool.ts --network base",
+        "verify:base": "hardhat run scripts/verify.ts --network base"
     },
     "devDependencies": {
         "@nomicfoundation/hardhat-chai-matchers": "^2.0.8",

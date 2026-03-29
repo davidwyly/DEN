@@ -27,13 +27,29 @@ Smart contracts for the Decentralized Exchange Network — a multi-venue DEX agg
 
 The main contract stays under the 24KB deployment limit by delegating V4 operations, price estimation, and pool validation to `V4SwapLib` (an external library linked at deploy time). `DENEstimator` and `DENHelper` are independently deployed satellite contracts.
 
-### Deployment Order
+### Deployment
 
-1. Deploy `V4SwapLib`
-2. Deploy `DecentralizedExchangeNetwork` (linked to V4SwapLib)
-3. Deploy `DENEstimator` (linked to V4SwapLib, references DEN)
-4. Deploy `DENHelper` (references DEN and DENEstimator)
-5. Configure DEN: `addV2Router()`, `addV3Router()`, `setV4PoolManager()`, `addV4Pool()`
+The deploy script handles the full sequence — library linking, constructor args, and initial configuration:
+
+```bash
+# 1. Configure .env (see .env.example)
+# 2. Deploy all contracts + configure routers and V4 PoolManager
+npm run deploy:testnet   # Base Sepolia
+npm run deploy:base      # Base mainnet
+
+# 3. Register V4 pools (edit scripts/add-v4-pool.ts first)
+DEN_ADDRESS=0x... npm run add-v4-pool:base
+
+# 4. Verify on Basescan (edit scripts/verify.ts with deployed addresses)
+npm run verify:base
+```
+
+Deployment order (handled automatically by the script):
+1. `V4SwapLib` (external library)
+2. `DecentralizedExchangeNetwork` (linked to V4SwapLib)
+3. `DENEstimator` (linked to V4SwapLib, references DEN)
+4. `DENHelper` (references DEN and DENEstimator)
+5. Configure DEN: `addV2Router()`, `addV3Router()`, `setV4PoolManager()`
 
 ---
 

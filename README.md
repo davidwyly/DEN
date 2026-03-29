@@ -642,11 +642,12 @@ npm install
 npx hardhat test
 ```
 
-**151 tests** covering:
+**166 tests** covering:
 - All swap directions on V2 and V3 (ETH->Token, Token->ETH roundtrips)
 - V4 pool management, rate checking, and error paths
 - Fee calculation precision and zero-value edge cases
 - Exploit path analysis (callback manipulation, approval drainage, reentrancy, payer spoofing)
+- Tax token (fee-on-transfer) compatibility across V2 pools at 5%, 10%, and 25% tax rates
 - Rate shopping across V2 + V3 + V4
 - Emergency functions, access control, and partner management
 - Sequential and concurrent swap state integrity

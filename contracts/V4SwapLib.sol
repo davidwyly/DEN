@@ -45,6 +45,8 @@ library V4SwapLib {
     /**
      * @dev Estimates output from a V4 pool by reading sqrtPriceX96 via extsload.
      *      Handles WETH ↔ native ETH equivalence automatically.
+     *      Deducts the V4 pool fee from the input before applying the spot price so
+     *      cross-tier rate shopping reflects true relative cost.
      *
      * @return Estimated output amount, or 0 on failure.
      */
@@ -74,30 +76,43 @@ library V4SwapLib {
 
         // Read sqrtPriceX96 from PM via extsload
         bytes32 _poolId = keccak256(abi.encode(_poolKey));
+        bytes32 _slot0Data;
         try IV4PoolManager(_v4PoolManager).extsload(
             keccak256(abi.encode(_poolId, V4_POOLS_SLOT))
-        ) returns (bytes32 _slot0Data) {
-            uint160 _sqrtPriceX96;
-            assembly {
-                _sqrtPriceX96 := and(_slot0Data, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-            }
-            if (_sqrtPriceX96 == 0) return 0;
-
-            uint256 _squaredPrice = uint256(_sqrtPriceX96) * uint256(_sqrtPriceX96);
-            uint256 _price0to1 = FullMath.mulDiv(_squaredPrice, 1e18, 1 << 192);
-
-            uint256 _rawPrice;
-            if (_effectiveIn == _poolKey.currency0) {
-                _rawPrice = _price0to1;
-            } else {
-                if (_price0to1 == 0) return 0;
-                _rawPrice = FullMath.mulDiv(1e18, 1e18, _price0to1);
-            }
-
-            return FullMath.mulDiv(_amountIn, _rawPrice, 1e18);
+        ) returns (bytes32 _data) {
+            _slot0Data = _data;
         } catch {
             return 0;
         }
+
+        uint160 _sqrtPriceX96;
+        assembly {
+            _sqrtPriceX96 := and(_slot0Data, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+        }
+        if (_sqrtPriceX96 == 0) return 0;
+
+        // V4 pool fees are in 1e6 scale (same as V3). Deduct before applying spot price.
+        uint256 _afterPoolFee = FullMath.mulDiv(_amountIn, 1_000_000 - uint256(_poolKey.fee), 1_000_000);
+
+        // Overflow-safe: split sqrtPrice^2 / 2^192 * 1e18 into two mulDivs so no
+        // intermediate exceeds uint256 max, even at sqrtPrice up to uint160 max.
+        //   step1 = sqrtPrice^2 / 2^96   (max (2^160)^2 / 2^96 = 2^224, fits uint256)
+        //   step2 = step1 * 1e18 / 2^96  (FullMath handles 512-bit intermediate)
+        uint256 _price0to1 = FullMath.mulDiv(
+            FullMath.mulDiv(uint256(_sqrtPriceX96), uint256(_sqrtPriceX96), 1 << 96),
+            1e18,
+            1 << 96
+        );
+
+        uint256 _rawPrice;
+        if (_effectiveIn == _poolKey.currency0) {
+            _rawPrice = _price0to1;
+        } else {
+            if (_price0to1 == 0) return 0;
+            _rawPrice = FullMath.mulDiv(1e18, 1e18, _price0to1);
+        }
+
+        return FullMath.mulDiv(_afterPoolFee, _rawPrice, 1e18);
     }
 
     // ============================================================
@@ -135,6 +150,13 @@ library V4SwapLib {
 
     /**
      * @dev Estimates output on a Uniswap V3 pool using sqrtPriceX96.
+     *      Deducts the pool's fee from the input first so rate-shopping across
+     *      fee tiers picks the cheapest pool rather than whichever tier happens
+     *      to have the highest spot price.
+     *
+     *      Overflow-safe: the old `sqrtPrice * sqrtPrice` multiplication overflowed
+     *      uint256 whenever sqrtPriceX96 > 2^128 (valid V3 range goes up to ~2^160),
+     *      so splitting into two FullMath.mulDiv calls is required.
      */
     function estimateV3(
         address _pool,
@@ -143,8 +165,25 @@ library V4SwapLib {
     ) public view returns (uint256) {
         IUniswapV3Pool _v3 = IUniswapV3Pool(_pool);
         (uint160 _sqrtPriceX96, , , , , , ) = _v3.slot0();
-        uint256 _sq = uint256(_sqrtPriceX96) * uint256(_sqrtPriceX96);
-        uint256 _p = FullMath.mulDiv(_sq, 1e18, 1 << 192);
+        if (_sqrtPriceX96 == 0) return 0;
+
+        // Skip dead pools — zero active-tick liquidity means no swap is possible here,
+        // and pools that were initialized but never used often hold extreme sqrtPriceX96
+        // values that would otherwise produce nonsensical quotes.
+        if (_v3.liquidity() == 0) return 0;
+
+        // Deduct V3 pool fee from input (fees are in 1e6 scale: 100=0.01%..10000=1%).
+        uint24 _poolFee = _v3.fee();
+        uint256 _afterPoolFee = FullMath.mulDiv(_amountIn, 1_000_000 - uint256(_poolFee), 1_000_000);
+
+        // Split sqrtPrice^2 / 2^192 * 1e18 into two mulDivs to avoid intermediate overflow:
+        //   step1 = sqrtPrice^2 / 2^96    (max (2^160)^2 / 2^96 = 2^224, fits uint256)
+        //   step2 = step1  * 1e18 / 2^96  (FullMath handles the 512-bit intermediate)
+        uint256 _p = FullMath.mulDiv(
+            FullMath.mulDiv(uint256(_sqrtPriceX96), uint256(_sqrtPriceX96), 1 << 96),
+            1e18,
+            1 << 96
+        );
 
         uint256 _raw;
         if (_tokenIn == _v3.token0()) {
@@ -154,7 +193,7 @@ library V4SwapLib {
             _raw = FullMath.mulDiv(1e18, 1e18, _p);
         }
 
-        return FullMath.mulDiv(_amountIn, _raw, 1e18);
+        return FullMath.mulDiv(_afterPoolFee, _raw, 1e18);
     }
 
     /**

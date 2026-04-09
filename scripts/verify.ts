@@ -11,10 +11,10 @@ import { run } from "hardhat";
  */
 
 // ── Fill in after deployment ────────────────────────────────────
-const V4_SWAP_LIB = "0x...";
-const DEN = "0x...";
-const ESTIMATOR = "0x...";
-const HELPER = "0x...";
+const V4_SWAP_LIB = "0xF28b3DF515a5840877a99Ef57554eB1E00baD20A";
+const DEN = "0x90affd60A05a4626a32e97eFa264CaC6287733A4";
+const ESTIMATOR = "0x7B4B8E2F4Ba58A4dB9a4243Fa884ce183d7D75AC";
+const HELPER = "0xeB5329366D5F7D7A5AB33dc2dB22741a7d91Bf79";
 
 // ── Must match what was passed to constructors ──────────────────
 const BASE_WETH = "0x4200000000000000000000000000000000000006";

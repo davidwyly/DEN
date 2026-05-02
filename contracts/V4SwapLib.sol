@@ -91,8 +91,12 @@ library V4SwapLib {
         }
         if (_sqrtPriceX96 == 0) return 0;
 
-        // V4 pool fees are in 1e6 scale (same as V3). Deduct before applying spot price.
-        uint256 _afterPoolFee = FullMath.mulDiv(_amountIn, 1_000_000 - uint256(_poolKey.fee), 1_000_000);
+        // Static-fee V4 pools encode fee in 1e6 scale (same as V3).
+        // Dynamic-fee pools use a sentinel value > 1e6 in poolKey.fee, so skip
+        // those here to avoid checked-underflow and estimator-wide reverts.
+        uint24 _poolFee = _poolKey.fee;
+        if (_poolFee > 1_000_000) return 0;
+        uint256 _afterPoolFee = FullMath.mulDiv(_amountIn, 1_000_000 - uint256(_poolFee), 1_000_000);
 
         // Overflow-safe: split sqrtPrice^2 / 2^192 * 1e18 into two mulDivs so no
         // intermediate exceeds uint256 max, even at sqrtPrice up to uint160 max.

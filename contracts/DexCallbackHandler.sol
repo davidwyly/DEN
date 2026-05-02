@@ -109,17 +109,7 @@ abstract contract DexCallbackHandler {
     ) internal {
         // If the payer is this contract, then we send the tokens to the pool from this contract
         if (_payer == address(this)) {
-            // Load WETH into memory to reduce extra SLOAD
-            address _WETH = WETH;
-
-            // Special handling for WETH: if we have enough raw ETH sitting in the contract,
-            // convert it to WETH before transferring
-            if (_tokenIn == _WETH && address(this).balance >= _amountToPay) {
-                // Deposit raw ETH into WETH
-                IWETH(_WETH).deposit{value: _amountToPay}();
-            }
-
-            // Verify that this contract has enough of _tokenIn after potentially wrapping
+            // Verify that this contract has enough of _tokenIn
             uint256 balance = IERC20(_tokenIn).balanceOf(address(this));
             if (balance < _amountToPay) {
                 revert ContractInsufficientBalance();

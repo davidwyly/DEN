@@ -43,6 +43,7 @@ contract DENHelper is Ownable, ReentrancyGuard {
     error TokensCannotBeEqual();
     error ETHForwardFailed();
     error DeadlineExpired();
+    error InsufficientFinalAmountOut();
 
     event BestSwap(
         address indexed caller,
@@ -87,9 +88,12 @@ contract DENHelper is Ownable, ReentrancyGuard {
 
         uint256 _before = IERC20(_tokenOut).balanceOf(address(this));
         _executeETHForToken(_route, _tokenOut, msg.value, _amountOutMin, _deadline);
-        amountOut = IERC20(_tokenOut).balanceOf(address(this)) - _before;
+        uint256 _helperAmountOut = IERC20(_tokenOut).balanceOf(address(this)) - _before;
 
-        IERC20(_tokenOut).safeTransfer(msg.sender, amountOut);
+        uint256 _userBefore = IERC20(_tokenOut).balanceOf(msg.sender);
+        IERC20(_tokenOut).safeTransfer(msg.sender, _helperAmountOut);
+        amountOut = IERC20(_tokenOut).balanceOf(msg.sender) - _userBefore;
+        if (amountOut < _amountOutMin) revert InsufficientFinalAmountOut();
         emit BestSwap(msg.sender, _route.version, WETH, _tokenOut, msg.value, amountOut);
     }
 
@@ -148,9 +152,12 @@ contract DENHelper is Ownable, ReentrancyGuard {
         IERC20(_tokenIn).forceApprove(address(den), _amountIn);
         uint256 _before = IERC20(_tokenOut).balanceOf(address(this));
         _executeTokenForToken(_route, _tokenIn, _tokenOut, _amountIn, _amountOutMin, _deadline);
-        amountOut = IERC20(_tokenOut).balanceOf(address(this)) - _before;
+        uint256 _helperAmountOut = IERC20(_tokenOut).balanceOf(address(this)) - _before;
 
-        IERC20(_tokenOut).safeTransfer(msg.sender, amountOut);
+        uint256 _userBefore = IERC20(_tokenOut).balanceOf(msg.sender);
+        IERC20(_tokenOut).safeTransfer(msg.sender, _helperAmountOut);
+        amountOut = IERC20(_tokenOut).balanceOf(msg.sender) - _userBefore;
+        if (amountOut < _amountOutMin) revert InsufficientFinalAmountOut();
         IERC20(_tokenIn).forceApprove(address(den), 0);
         emit BestSwap(msg.sender, _route.version, _tokenIn, _tokenOut, _amountIn, amountOut);
     }
